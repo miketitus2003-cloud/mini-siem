@@ -24,6 +24,7 @@ from app.database import (
     get_user_by_id,
     get_user_by_username,
     init_db,
+    seed_log_sources,
 )
 from app.alerts.engine import seed_default_rules
 
@@ -46,6 +47,14 @@ class SIEMUser(UserMixin):
     @property
     def is_admin(self) -> bool:
         return self.role == "admin"
+
+    @property
+    def is_analyst(self) -> bool:
+        return self.role in ("admin", "analyst")
+
+    @property
+    def is_viewer(self) -> bool:
+        return self.role == "viewer"
 
 
 def create_app(db_path: Optional[str] = None, load_samples: bool = False) -> Flask:
@@ -83,6 +92,11 @@ def create_app(db_path: Optional[str] = None, load_samples: bool = False) -> Fla
     seeded = seed_default_rules(db_path)
     if seeded:
         logger.info("Seeded %d default detection rules", seeded)
+
+    # ── Log sources ───────────────────────────
+    src_seeded = seed_log_sources(db_path)
+    if src_seeded:
+        logger.info("Seeded %d default log sources", src_seeded)
 
     # ── Default admin account ─────────────────
     _seed_admin(db_path, logger)
@@ -130,6 +144,8 @@ def _load_all_samples(db_path, logger):
     from app.logs.windows import load_sample_data as win_samples
     from app.logs.linux import load_sample_data as linux_samples
     from app.logs.azure import load_sample_data as azure_samples
+    from app.logs.firewall import load_sample_data as fw_samples
+    from app.logs.endpoint import load_sample_data as ep_samples
     from app.alerts.engine import evaluate_all
 
     w = win_samples(db_path=db_path)
@@ -141,6 +157,12 @@ def _load_all_samples(db_path, logger):
     a = azure_samples(db_path=db_path)
     logger.info("Loaded %d Azure sample events", len(a))
 
-    all_ids = w + l + a
+    f = fw_samples(db_path=db_path)
+    logger.info("Loaded %d Firewall sample events", len(f))
+
+    e = ep_samples(db_path=db_path)
+    logger.info("Loaded %d Endpoint sample events", len(e))
+
+    all_ids = w + l + a + f + e
     alerts = evaluate_all(recent_event_ids=all_ids, db_path=db_path)
     logger.info("Detection cycle on sample data produced %d alerts", len(alerts))

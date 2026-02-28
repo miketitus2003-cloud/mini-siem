@@ -17,28 +17,40 @@
 
 <!-- Stat cards -->
 <div class="row g-3 mb-4">
-    <div class="col-md-3">
+    <div class="col-md-2 col-sm-6">
         <div class="card stat-card p-3">
             <div class="stat-label">Total Events</div>
             <div class="stat-number" style="color:var(--siem-accent)">{{ stats.total_events }}</div>
         </div>
     </div>
-    <div class="col-md-3">
+    <div class="col-md-2 col-sm-6">
         <div class="card stat-card p-3">
             <div class="stat-label">Total Alerts</div>
             <div class="stat-number" style="color:var(--sev-high)">{{ stats.total_alerts }}</div>
         </div>
     </div>
-    <div class="col-md-3">
+    <div class="col-md-2 col-sm-6">
         <div class="card stat-card p-3">
             <div class="stat-label">Unacknowledged</div>
             <div class="stat-number" style="color:var(--sev-critical)">{{ stats.unacknowledged_alerts }}</div>
         </div>
     </div>
-    <div class="col-md-3">
+    <div class="col-md-2 col-sm-6">
+        <div class="card stat-card p-3">
+            <div class="stat-label">Open Incidents</div>
+            <div class="stat-number" style="color:#a78bfa"><a href="/incidents?status=open" style="color:inherit;text-decoration:none">{{ open_incidents }}</a></div>
+        </div>
+    </div>
+    <div class="col-md-2 col-sm-6">
         <div class="card stat-card p-3">
             <div class="stat-label">Sources Active</div>
             <div class="stat-number" style="color:var(--sev-low)">{{ stats.source_distribution | length }}</div>
+        </div>
+    </div>
+    <div class="col-md-2 col-sm-6">
+        <div class="card stat-card p-3">
+            <div class="stat-label">Critical Events</div>
+            <div class="stat-number" style="color:var(--sev-critical)">{{ stats.severity_distribution.get('critical', 0) }}</div>
         </div>
     </div>
 </div>
@@ -57,39 +69,27 @@
         </div>
     </div>
 
-    <!-- Severity + Source distribution -->
+    <!-- Severity donut -->
     <div class="col-md-3">
-        <div class="card p-3 h-100">
-            <h6 class="text-muted mb-3">By Severity</h6>
-            <div class="d-flex flex-column gap-2">
-                {% for sev in ['critical','high','medium','low'] %}
-                {% set cnt = stats.severity_distribution.get(sev, 0) %}
-                <div class="d-flex justify-content-between align-items-center">
-                    <span class="badge badge-{{ sev }}">{{ sev | upper }}</span>
-                    <span class="fw-semibold">{{ cnt }}</span>
-                </div>
-                {% endfor %}
-                {% if not stats.severity_distribution %}
-                <span class="text-muted small">No events yet</span>
-                {% endif %}
-            </div>
+        <div class="card p-3 h-100 text-center">
+            <h6 class="text-muted mb-2">By Severity</h6>
+            {% if stats.severity_distribution %}
+            <canvas id="sevChart" height="170"></canvas>
+            {% else %}
+            <p class="text-muted small mt-4">No events yet</p>
+            {% endif %}
         </div>
     </div>
 
+    <!-- Source pie -->
     <div class="col-md-3">
-        <div class="card p-3 h-100">
-            <h6 class="text-muted mb-3">By Source</h6>
-            <div class="d-flex flex-column gap-2">
-                {% for src, cnt in stats.source_distribution.items() %}
-                <div class="d-flex justify-content-between align-items-center">
-                    <span class="badge bg-secondary">{{ src }}</span>
-                    <span class="fw-semibold">{{ cnt }}</span>
-                </div>
-                {% endfor %}
-                {% if not stats.source_distribution %}
-                <span class="text-muted small">No events yet</span>
-                {% endif %}
-            </div>
+        <div class="card p-3 h-100 text-center">
+            <h6 class="text-muted mb-2">By Source</h6>
+            {% if stats.source_distribution %}
+            <canvas id="srcChart" height="170"></canvas>
+            {% else %}
+            <p class="text-muted small mt-4">No events yet</p>
+            {% endif %}
         </div>
     </div>
 </div>
@@ -226,7 +226,7 @@ document.getElementById('detectForm').addEventListener('submit', function(e) {
 setTimeout(() => location.reload(), 30000);
 
 {% if hourly %}
-// Hourly events chart
+// Hourly events bar chart
 const hourlyData = {{ hourly | tojson }};
 const labels = hourlyData.map(d => {
     const h = new Date(d.hour + ':00Z');
@@ -258,6 +258,60 @@ new Chart(document.getElementById('hourlyChart'), {
                 ticks: { color: '#94a3b8', stepSize: 1 },
                 grid: { color: '#2d3f55' },
                 beginAtZero: true
+            }
+        }
+    }
+});
+{% endif %}
+
+{% if stats.severity_distribution %}
+// Severity donut chart
+const sevDist = {{ stats.severity_distribution | tojson }};
+const sevOrder   = ['critical','high','medium','low'];
+const sevColors  = ['#f87171','#fbbf24','#facc15','#4ade80'];
+const sevLabels  = sevOrder.filter(s => sevDist[s] !== undefined);
+const sevValues  = sevLabels.map(s => sevDist[s]);
+const sevClrs    = sevLabels.map(s => sevColors[sevOrder.indexOf(s)]);
+
+new Chart(document.getElementById('sevChart'), {
+    type: 'doughnut',
+    data: {
+        labels: sevLabels.map(s => s.toUpperCase()),
+        datasets: [{ data: sevValues, backgroundColor: sevClrs, borderColor: '#1a2535', borderWidth: 2 }]
+    },
+    options: {
+        responsive: true,
+        cutout: '62%',
+        plugins: {
+            legend: {
+                position: 'bottom',
+                labels: { color: '#94a3b8', font: { size: 10 }, padding: 8 }
+            }
+        }
+    }
+});
+{% endif %}
+
+{% if stats.source_distribution %}
+// Source pie chart
+const srcDist = {{ stats.source_distribution | tojson }};
+const srcLabels = Object.keys(srcDist);
+const srcValues = Object.values(srcDist);
+const srcColors = ['#60a5fa','#fbbf24','#f87171','#34d399','#a78bfa','#fb923c'];
+
+new Chart(document.getElementById('srcChart'), {
+    type: 'doughnut',
+    data: {
+        labels: srcLabels,
+        datasets: [{ data: srcValues, backgroundColor: srcColors.slice(0, srcLabels.length), borderColor: '#1a2535', borderWidth: 2 }]
+    },
+    options: {
+        responsive: true,
+        cutout: '62%',
+        plugins: {
+            legend: {
+                position: 'bottom',
+                labels: { color: '#94a3b8', font: { size: 10 }, padding: 8 }
             }
         }
     }

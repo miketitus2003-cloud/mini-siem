@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block title %}Log Sources — Mini SIEM{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <h4 class="mb-0">Log Source Management</h4>
+        <p class="text-muted small mb-0">Registered log sources and their metadata categories</p>
+    </div>
+</div>
+
+<div class="card p-3">
+    <div class="table-responsive">
+        <table class="table table-sm table-hover">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Type</th>
+                    <th>Description</th>
+                    <th>Status</th>
+                    <th>Registered</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for s in sources %}
+                <tr>
+                    <td>{{ s.id }}</td>
+                    <td>
+                        <span class="badge bg-secondary">{{ s.name }}</span>
+                    </td>
+                    <td>
+                        {% set type_colors = {
+                            'network':     '#60a5fa',
+                            'identity':    '#a78bfa',
+                            'application': '#34d399',
+                            'host':        '#fbbf24',
+                            'cloud':       '#f87171'
+                        } %}
+                        <span style="color:{{ type_colors.get(s.source_type, '#94a3b8') }};font-weight:600;font-size:0.82rem">
+                            {{ s.source_type | upper }}
+                        </span>
+                    </td>
+                    <td class="text-muted" style="font-size:0.87rem">{{ s.description }}</td>
+                    <td>
+                        {% if s.enabled %}
+                        <span class="badge" style="background:rgba(74,222,128,0.2);color:#4ade80;border:1px solid #4ade80">ACTIVE</span>
+                        {% else %}
+                        <span class="badge bg-secondary">DISABLED</span>
+                        {% endif %}
+                    </td>
+                    <td class="text-muted" style="font-size:0.8rem">{{ s.created_at }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Type legend -->
+<div class="card p-3 mt-3">
+    <h6 class="text-muted mb-3">Source Type Categories</h6>
+    <div class="row g-3">
+        <div class="col-md-4">
+            <div style="border-left:3px solid #60a5fa;padding-left:10px">
+                <strong style="color:#60a5fa">NETWORK</strong>
+                <p class="text-muted small mb-0">Firewall, IDS/IPS, network flow logs. Focus on traffic patterns, blocked connections, port scans.</p>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div style="border-left:3px solid #fbbf24;padding-left:10px">
+                <strong style="color:#fbbf24">HOST</strong>
+                <p class="text-muted small mb-0">OS event logs (Windows/Linux), EDR/endpoint telemetry. Process execution, file access, auth events.</p>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div style="border-left:3px solid #f87171;padding-left:10px">
+                <strong style="color:#f87171">CLOUD</strong>
+                <p class="text-muted small mb-0">Azure AD, AWS CloudTrail, GCP Audit. Identity, sign-ins, cloud resource operations.</p>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div style="border-left:3px solid #a78bfa;padding-left:10px">
+                <strong style="color:#a78bfa">IDENTITY</strong>
+                <p class="text-muted small mb-0">Active Directory, LDAP, SSO providers. User auth, group changes, account lifecycle.</p>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div style="border-left:3px solid #34d399;padding-left:10px">
+                <strong style="color:#34d399">APPLICATION</strong>
+                <p class="text-muted small mb-0">Web server, application, database logs. App-layer events, errors, access patterns.</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Quick ingest links -->
+<div class="card p-3 mt-3">
+    <h6 class="text-muted mb-2">Ingest Sample Data by Source</h6>
+    <div class="d-flex gap-2 flex-wrap">
+        {% for s in sources %}
+        {% if current_user.is_admin %}
+        <button class="btn btn-sm btn-outline-secondary quick-sample-btn" data-source="{{ s.name }}">
+            Load {{ s.name }} samples
+        </button>
+        {% endif %}
+        {% endfor %}
+        <div id="quickSampleResult" class="d-none mt-2 w-100">
+            <div class="alert mb-0" id="quickSampleAlert"></div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.querySelectorAll('.quick-sample-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+        const source = btn.dataset.source;
+        btn.disabled = true;
+        btn.textContent = 'Loading...';
+        const r = await fetch('/api/ingest/sample', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({source})
+        });
+        const d = await r.json();
+        const resultDiv = document.getElementById('quickSampleResult');
+        const alertDiv  = document.getElementById('quickSampleAlert');
+        resultDiv.classList.remove('d-none');
+        if (r.ok) {
+            alertDiv.className = 'alert alert-success mb-0';
+            alertDiv.textContent = `✓ ${source}: created ${d.events_created} events, fired ${d.alerts_fired} alerts.`;
+        } else {
+            alertDiv.className = 'alert alert-danger mb-0';
+            alertDiv.textContent = `Error: ${d.error}`;
+        }
+        btn.disabled = false;
+        btn.textContent = `Load ${source} samples`;
+    });
+});
+</script>
+{% endblock %}

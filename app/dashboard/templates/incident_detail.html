@@ -1,0 +1,184 @@
+{% extends "base.html" %}
+{% block title %}Incident #{{ incident.id }} — Mini SIEM{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-start justify-content-between mb-4 flex-wrap gap-2">
+    <div>
+        <a href="/incidents" class="text-muted small" style="text-decoration:none">← Incidents</a>
+        <h4 class="mb-0 mt-1">
+            <span class="badge badge-{{ incident.severity }} me-2">{{ incident.severity | upper }}</span>
+            {{ incident.title }}
+        </h4>
+        <p class="text-muted small mb-0">Incident #{{ incident.id }} &mdash; Created {{ incident.created_at[:16] }}</p>
+    </div>
+    {% if not current_user.is_viewer %}
+    <div class="d-flex gap-2">
+        <select id="statusSelect" class="form-select form-select-sm" style="width:auto">
+            <option value="open"          {{ 'selected' if incident.status == 'open' }}>Open</option>
+            <option value="investigating" {{ 'selected' if incident.status == 'investigating' }}>Investigating</option>
+            <option value="resolved"      {{ 'selected' if incident.status == 'resolved' }}>Resolved</option>
+            <option value="closed"        {{ 'selected' if incident.status == 'closed' }}>Closed</option>
+        </select>
+        <button class="btn btn-sm btn-outline-info" id="updateStatusBtn">Update Status</button>
+    </div>
+    {% endif %}
+</div>
+
+<div class="row g-3">
+    <!-- Left: incident details -->
+    <div class="col-md-4">
+        <div class="card p-3">
+            <h6 class="text-muted mb-3">Incident Details</h6>
+            <dl class="row mb-0" style="font-size:0.88rem">
+                <dt class="col-5 text-muted">Status</dt>
+                <dd class="col-7">
+                    {% set status_colors = {
+                        'open': '#f87171', 'investigating': '#fbbf24',
+                        'resolved': '#4ade80', 'closed': '#94a3b8'
+                    } %}
+                    <span style="color:{{ status_colors.get(incident.status, '#fff') }};font-weight:600">
+                        {{ incident.status | upper }}
+                    </span>
+                </dd>
+                <dt class="col-5 text-muted">Severity</dt>
+                <dd class="col-7"><span class="badge badge-{{ incident.severity }}">{{ incident.severity | upper }}</span></dd>
+                <dt class="col-5 text-muted">Assigned To</dt>
+                <dd class="col-7" id="assignedDisplay">{{ incident.assigned_to or 'Unassigned' }}</dd>
+                <dt class="col-5 text-muted">Created</dt>
+                <dd class="col-7" style="font-size:0.8rem">{{ incident.created_at[:16] }}</dd>
+                <dt class="col-5 text-muted">Updated</dt>
+                <dd class="col-7" style="font-size:0.8rem">{{ incident.updated_at[:16] }}</dd>
+            </dl>
+
+            {% if not current_user.is_viewer %}
+            <hr style="border-color:var(--siem-border)">
+            <label class="form-label mb-1 text-muted" style="font-size:0.78rem;text-transform:uppercase">Assign To</label>
+            <div class="d-flex gap-2">
+                <input type="text" id="assignInput" class="form-control form-control-sm"
+                       placeholder="username" value="{{ incident.assigned_to }}">
+                <button class="btn btn-sm btn-outline-secondary" id="assignBtn">Set</button>
+            </div>
+
+            <hr style="border-color:var(--siem-border)">
+            <label class="form-label mb-1 text-muted" style="font-size:0.78rem;text-transform:uppercase">Notes / Description</label>
+            <textarea id="descInput" class="form-control form-control-sm" rows="4"
+                      placeholder="Investigation notes...">{{ incident.description }}</textarea>
+            <button class="btn btn-sm btn-outline-secondary mt-2" id="saveDescBtn">Save Notes</button>
+            {% else %}
+            {% if incident.description %}
+            <hr style="border-color:var(--siem-border)">
+            <p class="text-muted small mb-0">{{ incident.description }}</p>
+            {% endif %}
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Right: linked alerts + add alerts -->
+    <div class="col-md-8">
+        <div class="card p-3 mb-3">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h6 class="text-muted mb-0">Linked Alerts ({{ linked_alerts | length }})</h6>
+            </div>
+            {% if linked_alerts %}
+            <div class="table-responsive">
+                <table class="table table-sm table-hover">
+                    <thead><tr><th>ID</th><th>Severity</th><th>Message</th><th>Fired At</th><th>Status</th></tr></thead>
+                    <tbody>
+                        {% for a in linked_alerts %}
+                        <tr>
+                            <td>{{ a.id }}</td>
+                            <td><span class="badge badge-{{ a.severity }}">{{ a.severity | upper }}</span></td>
+                            <td class="msg-cell" title="{{ a.message }}">{{ a.message }}</td>
+                            <td class="text-muted" style="font-size:0.8rem">{{ a.fired_at[:16] }}</td>
+                            <td>
+                                {% if a.acknowledged %}<span class="badge bg-secondary">ACK</span>
+                                {% else %}<span class="badge bg-danger">OPEN</span>{% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p class="text-muted small mb-0">No alerts linked yet.</p>
+            {% endif %}
+        </div>
+
+        {% if not current_user.is_viewer and open_alerts %}
+        <div class="card p-3">
+            <h6 class="text-muted mb-3">Link Alert to This Incident</h6>
+            <div class="d-flex gap-2">
+                <select id="linkAlertSelect" class="form-select form-select-sm">
+                    <option value="">— choose an alert —</option>
+                    {% for a in open_alerts %}
+                    <option value="{{ a.id }}">[{{ a.id }}] {{ a.severity | upper }} — {{ a.message[:80] }}</option>
+                    {% endfor %}
+                </select>
+                <button class="btn btn-sm btn-outline-success" id="linkAlertBtn">Link</button>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const incidentId = {{ incident.id }};
+
+async function patchIncident(updates) {
+    const r = await fetch(`/api/incidents/${incidentId}`, {
+        method: 'PATCH',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(updates)
+    });
+    return r.ok;
+}
+
+{% if not current_user.is_viewer %}
+// Update status
+document.getElementById('updateStatusBtn').addEventListener('click', async () => {
+    const status = document.getElementById('statusSelect').value;
+    if (await patchIncident({status})) location.reload();
+    else alert('Error updating status');
+});
+
+// Assign
+document.getElementById('assignBtn').addEventListener('click', async () => {
+    const assigned_to = document.getElementById('assignInput').value.trim();
+    if (await patchIncident({assigned_to})) {
+        document.getElementById('assignedDisplay').textContent = assigned_to || 'Unassigned';
+    }
+});
+
+// Save description
+document.getElementById('saveDescBtn').addEventListener('click', async () => {
+    const description = document.getElementById('descInput').value.trim();
+    const btn = document.getElementById('saveDescBtn');
+    btn.textContent = 'Saving...';
+    if (await patchIncident({description})) {
+        btn.textContent = 'Saved!';
+        setTimeout(() => { btn.textContent = 'Save Notes'; }, 1500);
+    } else {
+        btn.textContent = 'Error';
+    }
+});
+
+// Link alert
+const linkBtn = document.getElementById('linkAlertBtn');
+if (linkBtn) {
+    linkBtn.addEventListener('click', async () => {
+        const alert_id = document.getElementById('linkAlertSelect').value;
+        if (!alert_id) return;
+        const r = await fetch(`/api/incidents/${incidentId}/alerts`, {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({alert_id: parseInt(alert_id)})
+        });
+        if (r.ok) location.reload();
+        else alert('Error linking alert');
+    });
+}
+{% endif %}
+</script>
+{% endblock %}

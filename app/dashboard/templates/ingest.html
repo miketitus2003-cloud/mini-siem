@@ -19,7 +19,7 @@
 
                 <div class="d-grid gap-2 mb-3">
                     <button class="btn btn-outline-primary sample-btn" data-source="all">
-                        Load All Sources (Windows + Linux + Azure)
+                        Load All Sources (Windows + Linux + Azure + Firewall + Endpoint)
                     </button>
                     <button class="btn btn-outline-light sample-btn" data-source="windows">
                         Windows Events Only
@@ -29,6 +29,12 @@
                     </button>
                     <button class="btn btn-outline-light sample-btn" data-source="azure">
                         Azure AD Logs Only
+                    </button>
+                    <button class="btn btn-outline-light sample-btn" data-source="firewall">
+                        Firewall Logs Only
+                    </button>
+                    <button class="btn btn-outline-light sample-btn" data-source="endpoint">
+                        Endpoint / EDR Only
                     </button>
                 </div>
 
@@ -52,6 +58,8 @@
                         <option value="linux">Linux Syslog (one line per event)</option>
                         <option value="windows">Windows Event XML</option>
                         <option value="azure">Azure JSON (array of log objects)</option>
+                        <option value="firewall">Firewall logs (key=value syslog style)</option>
+                        <option value="endpoint">Endpoint EDR (JSON objects, one per line)</option>
                     </select>
                 </div>
 
@@ -110,6 +118,15 @@ Jun 15 08:23:15 server sudo: user1 : TTY=pts/0 ; USER=root ; COMMAND=/bin/bash</
   "status": {"errorCode": 50126},
   "createdDateTime": "2024-01-15T08:00:00Z"
 }]</pre>
+                    </div>
+                    <div class="col-md-4">
+                        <p class="text-muted small mb-1 text-uppercase" style="letter-spacing:0.5px">Firewall (key=value)</p>
+                        <pre style="background:var(--siem-card2);padding:10px;border-radius:6px;font-size:0.75rem;color:var(--siem-text);overflow-x:auto">Jan 15 08:22:11 fw01 pf: action=block src=10.0.0.55 dst=192.168.1.1 dpt=22 proto=TCP
+Jan 15 08:30:00 fw01 pf: action=allow src=172.16.0.10 dst=8.8.8.8 dpt=443 proto=TCP</pre>
+                    </div>
+                    <div class="col-md-4">
+                        <p class="text-muted small mb-1 text-uppercase" style="letter-spacing:0.5px">Endpoint EDR (NDJSON)</p>
+                        <pre style="background:var(--siem-card2);padding:10px;border-radius:6px;font-size:0.75rem;color:var(--siem-text);overflow-x:auto">{"timestamp":"2024-01-15T09:05:33Z","hostname":"WS-PC14","username":"jdoe","process_name":"powershell.exe","command_line":"powershell -EncodedCommand ...","event_type":"ProcessCreate","severity":"high"}</pre>
                     </div>
                 </div>
             </div>

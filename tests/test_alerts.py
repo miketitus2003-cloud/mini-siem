@@ -84,7 +84,7 @@ class TestRuleSeeding(_DBTestCase):
         for rule in rules:
             cond = json.loads(rule["condition_json"])
             self.assertIn("mode", cond)
-            self.assertIn(cond["mode"], ("single", "threshold"))
+            self.assertIn(cond["mode"], ("single", "threshold", "correlation"))
 
 
 # ══════════════════════════════════════════════

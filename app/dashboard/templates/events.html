@@ -5,20 +5,29 @@
 <div class="row mb-4">
     <div class="col">
         <h4 class="mb-0">Event Explorer</h4>
-        <p class="text-muted small mb-0">Browse and filter normalized security events</p>
+        <p class="text-muted small mb-0">Search and filter normalized security events across all sources</p>
     </div>
 </div>
 
 <!-- Filters -->
 <div class="card p-3 mb-3">
     <form method="GET" action="/events" class="d-flex gap-2 flex-wrap align-items-end">
+        <!-- Free-text search -->
+        <div style="flex:1;min-width:220px">
+            <label class="form-label mb-1" style="font-size:0.75rem;color:var(--siem-muted);text-transform:uppercase">Search (IP, user, host, message)</label>
+            <input type="text" name="q" class="form-control form-control-sm"
+                   placeholder="e.g. 10.0.0.55  or  jdoe  or  mimikatz"
+                   value="{{ search_q }}">
+        </div>
         <div>
             <label class="form-label mb-1" style="font-size:0.75rem;color:var(--siem-muted);text-transform:uppercase">Source</label>
             <select name="source" class="form-select form-select-sm" style="min-width:130px">
                 <option value="">All Sources</option>
-                <option value="windows" {{ 'selected' if source == 'windows' }}>Windows</option>
-                <option value="linux"   {{ 'selected' if source == 'linux' }}>Linux</option>
-                <option value="azure"   {{ 'selected' if source == 'azure' }}>Azure</option>
+                <option value="windows"  {{ 'selected' if source == 'windows' }}>Windows</option>
+                <option value="linux"    {{ 'selected' if source == 'linux' }}>Linux</option>
+                <option value="azure"    {{ 'selected' if source == 'azure' }}>Azure</option>
+                <option value="firewall" {{ 'selected' if source == 'firewall' }}>Firewall</option>
+                <option value="endpoint" {{ 'selected' if source == 'endpoint' }}>Endpoint</option>
             </select>
         </div>
         <div>
@@ -43,13 +52,18 @@
         <div>
             <label class="form-label mb-1" style="font-size:0.75rem;color:var(--siem-muted);text-transform:uppercase">Event Type</label>
             <input type="text" name="event_type" class="form-control form-control-sm" style="min-width:160px"
-                   placeholder="e.g. auth_failure" value="{{ event_type }}">
+                   placeholder="e.g. login_failure" value="{{ event_type }}">
         </div>
         <div class="d-flex gap-2 align-self-end">
-            <button type="submit" class="btn btn-sm btn-outline-info">Filter</button>
+            <button type="submit" class="btn btn-sm btn-outline-info">Search</button>
             <a href="/events" class="btn btn-sm btn-outline-secondary">Clear</a>
         </div>
     </form>
+    {% if search_q %}
+    <div class="mt-2">
+        <small class="text-muted">Showing results for: <code>{{ search_q }}</code></small>
+    </div>
+    {% endif %}
 </div>
 
 <!-- Events table -->
@@ -76,7 +90,7 @@
                     <td>{{ ev.id }}</td>
                     <td class="text-muted text-nowrap" style="font-size:0.8rem">{{ ev.timestamp }}</td>
                     <td><span class="badge bg-secondary">{{ ev.source }}</span></td>
-                    <td>{{ ev.event_type }}</td>
+                    <td style="font-size:0.82rem">{{ ev.event_type }}</td>
                     <td><span class="badge badge-{{ ev.severity }}">{{ ev.severity }}</span></td>
                     <td>{{ ev.host or '—' }}</td>
                     <td>{{ ev.user or '—' }}</td>
@@ -93,19 +107,25 @@
         <ul class="pagination pagination-sm justify-content-center">
             {% if page > 1 %}
             <li class="page-item">
-                <a class="page-link" href="/events?page={{ page - 1 }}&source={{ source }}&severity={{ severity }}&event_type={{ event_type }}&time_range={{ time_range }}">Previous</a>
+                <a class="page-link" href="/events?page={{ page - 1 }}&source={{ source }}&severity={{ severity }}&event_type={{ event_type }}&time_range={{ time_range }}&q={{ search_q }}">Previous</a>
             </li>
             {% endif %}
             <li class="page-item active"><span class="page-link" style="background:var(--siem-card2);border-color:var(--siem-border)">Page {{ page }}</span></li>
             {% if events | length == per_page %}
             <li class="page-item">
-                <a class="page-link" href="/events?page={{ page + 1 }}&source={{ source }}&severity={{ severity }}&event_type={{ event_type }}&time_range={{ time_range }}">Next</a>
+                <a class="page-link" href="/events?page={{ page + 1 }}&source={{ source }}&severity={{ severity }}&event_type={{ event_type }}&time_range={{ time_range }}&q={{ search_q }}">Next</a>
             </li>
             {% endif %}
         </ul>
     </nav>
     {% else %}
-    <p class="text-muted mb-0">No events match your filters. <a href="/ingest" style="color:var(--siem-accent)">Load sample data</a> to get started.</p>
+    <p class="text-muted mb-0">
+        {% if search_q %}
+        No events match your search for <code>{{ search_q }}</code>.
+        {% else %}
+        No events match your filters. <a href="/ingest" style="color:var(--siem-accent)">Load sample data</a> to get started.
+        {% endif %}
+    </p>
     {% endif %}
 </div>
 {% endblock %}

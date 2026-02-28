@@ -46,10 +46,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from app.database import (
+    create_incident,
     get_alert_rules,
     get_events_in_window,
+    get_incidents,
     insert_alert,
     insert_alert_rule,
+    link_alert_to_incident,
     query_events,
 )
 
@@ -193,6 +196,79 @@ DEFAULT_RULES: List[Dict[str, Any]] = [
             "field_filters": {"source": "azure"},
         }),
     },
+    # ── Firewall rules ────────────────────────
+    {
+        "name": "Port Scan Detected",
+        "description": (
+            "Detects 8 or more firewall blocks from the same source IP "
+            "within a 2-minute window — indicative of port scanning."
+        ),
+        "severity": "high",
+        "event_type": "connection_blocked",
+        "condition_json": json.dumps({
+            "mode": "threshold",
+            "threshold": 8,
+            "window_seconds": 120,
+            "group_by": "host",
+            "field_filters": {"source": "firewall"},
+        }),
+    },
+    {
+        "name": "RDP/SMB Attack from Internet",
+        "description": (
+            "Fires on any firewall block targeting RDP (3389) or SMB (445) ports."
+        ),
+        "severity": "high",
+        "event_type": "connection_blocked",
+        "condition_json": json.dumps({
+            "mode": "single",
+            "field_filters": {"source": "firewall"},
+        }),
+    },
+    # ── Endpoint rules ────────────────────────
+    {
+        "name": "Suspicious Process Execution",
+        "description": (
+            "Fires on any high or critical severity process creation event "
+            "from the endpoint telemetry source."
+        ),
+        "severity": "high",
+        "event_type": "process_created",
+        "condition_json": json.dumps({
+            "mode": "single",
+            "field_filters": {"source": "endpoint", "severity": "high"},
+        }),
+    },
+    {
+        "name": "LSASS Memory Access",
+        "description": (
+            "Fires on process access events targeting lsass.exe, "
+            "a common credential dumping technique."
+        ),
+        "severity": "critical",
+        "event_type": "process_access",
+        "condition_json": json.dumps({
+            "mode": "single",
+            "field_filters": {"source": "endpoint"},
+        }),
+    },
+    # ── Correlation rule ──────────────────────
+    {
+        "name": "Brute-Force Success – Likely Compromise",
+        "description": (
+            "Correlation: 3+ login failures followed by a login success "
+            "for the same user within a 10-minute window — likely compromise."
+        ),
+        "severity": "critical",
+        "event_type": "login_failure",
+        "condition_json": json.dumps({
+            "mode": "correlation",
+            "failure_threshold": 3,
+            "window_seconds": 600,
+            "group_by": "user",
+            "follow_up_event": "login_success",
+        }),
+    },
 ]
 
 
@@ -309,6 +385,71 @@ def _evaluate_single_rule(
     return alerts_to_fire
 
 
+def _evaluate_correlation_rule(
+    rule: Dict[str, Any],
+    condition: Dict[str, Any],
+    now: datetime,
+    db_path: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Correlation rule: N failures + 1 success for the same user in a window."""
+    window_sec = condition.get("window_seconds", 600)
+    failure_threshold = condition.get("failure_threshold", 3)
+    group_by = condition.get("group_by", "user")
+    follow_up = condition.get("follow_up_event", "login_success")
+    field_filters = condition.get("field_filters", {})
+
+    window_start = (now - timedelta(seconds=window_sec)).isoformat()
+    window_end = now.isoformat()
+
+    failures = get_events_in_window(
+        event_type=rule["event_type"],
+        window_start=window_start,
+        window_end=window_end,
+        extra_filters=field_filters,
+        db_path=db_path,
+    )
+    successes = get_events_in_window(
+        event_type=follow_up,
+        window_start=window_start,
+        window_end=window_end,
+        extra_filters=field_filters,
+        db_path=db_path,
+    )
+
+    if not failures or not successes:
+        return []
+
+    # Group failures by the group_by field
+    from collections import defaultdict
+    fail_groups: Dict[str, list] = defaultdict(list)
+    for ev in failures:
+        key = ev.get(group_by, "__none__")
+        fail_groups[key].append(ev)
+
+    success_users = {ev.get(group_by, "__none__") for ev in successes}
+
+    alerts_to_fire: List[Dict[str, Any]] = []
+    for user_key, fail_events in fail_groups.items():
+        if len(fail_events) >= failure_threshold and user_key in success_users:
+            all_ids = [e["id"] for e in fail_events]
+            # Append success event IDs too
+            for sev in successes:
+                if sev.get(group_by) == user_key:
+                    all_ids.append(sev["id"])
+            alerts_to_fire.append({
+                "rule_id": rule["id"],
+                "event_ids_json": json.dumps(all_ids),
+                "severity": rule["severity"],
+                "message": (
+                    f"[{rule['name']}] {len(fail_events)} failures then success "
+                    f"for {group_by}={user_key!r} in {window_sec}s window — "
+                    "possible account compromise"
+                ),
+            })
+
+    return alerts_to_fire
+
+
 # ──────────────────────────────────────────────
 # Public API
 # ──────────────────────────────────────────────
@@ -346,6 +487,8 @@ def evaluate_all(
             pending = _evaluate_single_rule(
                 rule, condition, recent_event_ids=recent_event_ids, db_path=db_path
             )
+        elif mode == "correlation":
+            pending = _evaluate_correlation_rule(rule, condition, now, db_path=db_path)
         else:
             logger.warning("Unknown rule mode %r in rule %s", mode, rule["name"])
             continue
@@ -359,10 +502,38 @@ def evaluate_all(
                 alert_data["message"][:200],
                 aid,
             )
+            # Auto-create an incident for critical correlation alerts
+            condition = json.loads(rule.get("condition_json", "{}"))
+            if condition.get("mode") == "correlation" and alert_data["severity"] == "critical":
+                _auto_create_incident(rule, alert_data, aid, db_path=db_path)
 
     if alert_ids:
         logger.info("Evaluation complete: %d new alerts fired", len(alert_ids))
     return alert_ids
+
+
+def _auto_create_incident(
+    rule: Dict[str, Any],
+    alert_data: Dict[str, Any],
+    alert_id: int,
+    db_path: Optional[str] = None,
+) -> None:
+    """Create an incident automatically when a correlation rule fires."""
+    try:
+        title = f"[AUTO] {rule['name']}"
+        description = alert_data["message"]
+        incident_id = create_incident(
+            title=title,
+            description=description,
+            severity=alert_data["severity"],
+            db_path=db_path,
+        )
+        link_alert_to_incident(incident_id, alert_id, db_path=db_path)
+        logger.info(
+            "Auto-created incident %d for correlation alert %d", incident_id, alert_id
+        )
+    except Exception:
+        logger.exception("Failed to auto-create incident for alert %d", alert_id)
 
 
 def run_detection_cycle(

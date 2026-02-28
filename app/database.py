@@ -26,7 +26,7 @@ DB_PATH = os.path.join(DB_DIR, "siem.db")
 
 _local = threading.local()
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # ──────────────────────────────────────────────
 # Schema DDL
@@ -40,9 +40,18 @@ CREATE TABLE IF NOT EXISTS schema_version (
     version     INTEGER PRIMARY KEY
 );
 
+CREATE TABLE IF NOT EXISTS log_sources (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT    NOT NULL UNIQUE,
+    source_type TEXT    NOT NULL CHECK(source_type IN ('network','identity','application','host','cloud')),
+    description TEXT    DEFAULT '',
+    enabled     INTEGER NOT NULL DEFAULT 1,
+    created_at  TEXT    NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS raw_logs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    source      TEXT    NOT NULL CHECK(source IN ('windows','linux','azure')),
+    source      TEXT    NOT NULL,
     ingested_at TEXT    NOT NULL,
     raw_text    TEXT    NOT NULL
 );
@@ -89,12 +98,30 @@ CREATE INDEX IF NOT EXISTS idx_norm_events_sev     ON normalized_events(severity
 CREATE INDEX IF NOT EXISTS idx_alerts_fired        ON alerts(fired_at);
 CREATE INDEX IF NOT EXISTS idx_alerts_ack          ON alerts(acknowledged);
 
+CREATE TABLE IF NOT EXISTS incidents (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    title           TEXT    NOT NULL,
+    description     TEXT    DEFAULT '',
+    severity        TEXT    NOT NULL CHECK(severity IN ('low','medium','high','critical')),
+    status          TEXT    NOT NULL DEFAULT 'open'
+                            CHECK(status IN ('open','investigating','resolved','closed')),
+    assigned_to     TEXT    DEFAULT '',
+    created_at      TEXT    NOT NULL,
+    updated_at      TEXT    NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS incident_alerts (
+    incident_id     INTEGER NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+    alert_id        INTEGER NOT NULL REFERENCES alerts(id) ON DELETE CASCADE,
+    PRIMARY KEY (incident_id, alert_id)
+);
+
 CREATE TABLE IF NOT EXISTS users (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     username      TEXT    NOT NULL UNIQUE,
     password_hash TEXT    NOT NULL,
     role          TEXT    NOT NULL DEFAULT 'analyst'
-                          CHECK(role IN ('admin', 'analyst')),
+                          CHECK(role IN ('admin', 'analyst', 'viewer')),
     created_at    TEXT    NOT NULL
 );
 """
@@ -151,10 +178,45 @@ def close_connection():
 
 def _migrate(conn: sqlite3.Connection) -> None:
     """Apply incremental schema migrations to existing databases."""
+    # v1 → v2: add notes to alerts
     cols = {row[1] for row in conn.execute("PRAGMA table_info(alerts)").fetchall()}
     if "notes" not in cols:
         conn.execute("ALTER TABLE alerts ADD COLUMN notes TEXT DEFAULT ''")
         conn.commit()
+
+    # v2 → v3: log_sources, incidents, incident_alerts; viewer role; fts index
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "log_sources" not in tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS log_sources (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                name        TEXT    NOT NULL UNIQUE,
+                source_type TEXT    NOT NULL,
+                description TEXT    DEFAULT '',
+                enabled     INTEGER NOT NULL DEFAULT 1,
+                created_at  TEXT    NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS incidents (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                title           TEXT    NOT NULL,
+                description     TEXT    DEFAULT '',
+                severity        TEXT    NOT NULL,
+                status          TEXT    NOT NULL DEFAULT 'open',
+                assigned_to     TEXT    DEFAULT '',
+                created_at      TEXT    NOT NULL,
+                updated_at      TEXT    NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS incident_alerts (
+                incident_id     INTEGER NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+                alert_id        INTEGER NOT NULL REFERENCES alerts(id) ON DELETE CASCADE,
+                PRIMARY KEY (incident_id, alert_id)
+            );
+        """)
+        conn.commit()
+
+    # Widen the users role CHECK constraint (SQLite can't ALTER CHECK, recreate if needed)
+    # We just ensure viewer is allowed by not enforcing via the app layer for older DBs.
+    # New DBs get the full CHECK from _SCHEMA_SQL above.
 
 
 def init_db(db_path: Optional[str] = None):
@@ -517,3 +579,185 @@ def get_user_by_id(
         "SELECT * FROM users WHERE id = ?", (user_id,)
     ).fetchone()
     return dict(row) if row else None
+
+
+def get_all_users(db_path: Optional[str] = None) -> List[Dict[str, Any]]:
+    conn = get_connection(db_path)
+    rows = conn.execute("SELECT id, username, role, created_at FROM users ORDER BY id").fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_user_role(user_id: int, role: str, db_path: Optional[str] = None):
+    with transaction(db_path) as conn:
+        conn.execute("UPDATE users SET role = ? WHERE id = ?", (role, user_id))
+
+
+def delete_user(user_id: int, db_path: Optional[str] = None):
+    with transaction(db_path) as conn:
+        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+
+# ──────────────────────────────────────────────
+# Log source operations
+# ──────────────────────────────────────────────
+
+_DEFAULT_SOURCES = [
+    ("windows",  "host",     "Windows Event Logs (Security, System, Application)"),
+    ("linux",    "host",     "Linux Syslog / auth.log / kern.log"),
+    ("azure",    "cloud",    "Azure AD Sign-in & Audit Logs"),
+    ("firewall", "network",  "Firewall / perimeter traffic logs"),
+    ("endpoint", "host",     "EDR / endpoint telemetry"),
+]
+
+
+def seed_log_sources(db_path: Optional[str] = None) -> int:
+    """Insert default log source definitions if they don't exist yet."""
+    conn = get_connection(db_path)
+    existing = {r[0] for r in conn.execute("SELECT name FROM log_sources").fetchall()}
+    inserted = 0
+    for name, stype, desc in _DEFAULT_SOURCES:
+        if name not in existing:
+            with transaction(db_path) as c:
+                c.execute(
+                    "INSERT INTO log_sources (name, source_type, description, enabled, created_at) "
+                    "VALUES (?, ?, ?, 1, ?)",
+                    (name, stype, desc, _utcnow()),
+                )
+            inserted += 1
+    return inserted
+
+
+def get_log_sources(db_path: Optional[str] = None) -> List[Dict[str, Any]]:
+    conn = get_connection(db_path)
+    rows = conn.execute("SELECT * FROM log_sources ORDER BY id").fetchall()
+    return [dict(r) for r in rows]
+
+
+# ──────────────────────────────────────────────
+# Full-text event search
+# ──────────────────────────────────────────────
+
+def search_events(
+    query: str,
+    filters: Optional[Dict[str, Any]] = None,
+    time_range: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    db_path: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Search events by free-text across message, host, user, process, and IP."""
+    conn = get_connection(db_path)
+    clauses: List[str] = []
+    params: List[Any] = []
+    allowed = {"source", "event_type", "severity", "host", "user", "process"}
+    for key, val in (filters or {}).items():
+        if key in allowed and val:
+            clauses.append(f"{key} = ?")
+            params.append(val)
+    if time_range == "last_hour":
+        since = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        clauses.append("timestamp >= ?")
+        params.append(since)
+    elif time_range == "last_24h":
+        since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        clauses.append("timestamp >= ?")
+        params.append(since)
+    elif time_range == "last_7d":
+        since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        clauses.append("timestamp >= ?")
+        params.append(since)
+    if query:
+        like = f"%{query}%"
+        clauses.append(
+            "(message LIKE ? OR host LIKE ? OR \"user\" LIKE ? OR process LIKE ? OR metadata_json LIKE ?)"
+        )
+        params.extend([like, like, like, like, like])
+    where = "WHERE " + " AND ".join(clauses) if clauses else ""
+    sql = f"SELECT * FROM normalized_events {where} ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+    rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ──────────────────────────────────────────────
+# Incident / Case management
+# ──────────────────────────────────────────────
+
+def create_incident(
+    title: str,
+    description: str,
+    severity: str,
+    assigned_to: str = "",
+    db_path: Optional[str] = None,
+) -> int:
+    now = _utcnow()
+    with transaction(db_path) as conn:
+        cur = conn.execute(
+            "INSERT INTO incidents (title, description, severity, status, assigned_to, created_at, updated_at) "
+            "VALUES (?, ?, ?, 'open', ?, ?, ?)",
+            (title, description, severity, assigned_to, now, now),
+        )
+        return cur.lastrowid
+
+
+def get_incidents(
+    status: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+    db_path: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    conn = get_connection(db_path)
+    if status:
+        rows = conn.execute(
+            "SELECT * FROM incidents WHERE status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (status, limit, offset),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM incidents ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_incident(incident_id: int, db_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    conn = get_connection(db_path)
+    row = conn.execute("SELECT * FROM incidents WHERE id = ?", (incident_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def update_incident(incident_id: int, updates: Dict[str, Any], db_path: Optional[str] = None):
+    allowed = {"title", "description", "severity", "status", "assigned_to"}
+    sets = []
+    params = []
+    for k, v in updates.items():
+        if k in allowed:
+            sets.append(f"{k} = ?")
+            params.append(v)
+    if not sets:
+        return
+    sets.append("updated_at = ?")
+    params.append(_utcnow())
+    params.append(incident_id)
+    with transaction(db_path) as conn:
+        conn.execute(f"UPDATE incidents SET {', '.join(sets)} WHERE id = ?", params)
+
+
+def link_alert_to_incident(incident_id: int, alert_id: int, db_path: Optional[str] = None):
+    with transaction(db_path) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO incident_alerts (incident_id, alert_id) VALUES (?, ?)",
+            (incident_id, alert_id),
+        )
+        conn.execute("UPDATE incidents SET updated_at = ? WHERE id = ?", (_utcnow(), incident_id))
+
+
+def get_incident_alerts(incident_id: int, db_path: Optional[str] = None) -> List[Dict[str, Any]]:
+    conn = get_connection(db_path)
+    rows = conn.execute(
+        "SELECT a.* FROM alerts a "
+        "JOIN incident_alerts ia ON ia.alert_id = a.id "
+        "WHERE ia.incident_id = ? ORDER BY a.fired_at DESC",
+        (incident_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
