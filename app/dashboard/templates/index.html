@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Mini SIEM{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <h4 class="text-light">Dashboard Overview</h4>
+        <p class="text-secondary mb-0">Real-time security posture summary</p>
+    </div>
+    <div class="col-auto">
+        <form method="POST" action="/api/detect" id="detectForm">
+            <button type="submit" class="btn btn-outline-info btn-sm" id="detectBtn">Run Detection Cycle</button>
+        </form>
+    </div>
+</div>
+
+<!-- Stat cards -->
+<div class="row g-3 mb-4">
+    <div class="col-md-3">
+        <div class="card stat-card p-3">
+            <div class="text-secondary small">Total Events</div>
+            <div class="stat-number text-info">{{ stats.total_events }}</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card p-3">
+            <div class="text-secondary small">Total Alerts</div>
+            <div class="stat-number text-warning">{{ stats.total_alerts }}</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card p-3">
+            <div class="text-secondary small">Unacknowledged</div>
+            <div class="stat-number text-danger">{{ stats.unacknowledged_alerts }}</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card p-3">
+            <div class="text-secondary small">Sources Active</div>
+            <div class="stat-number text-success">{{ stats.source_distribution | length }}</div>
+        </div>
+    </div>
+</div>
+
+<!-- Distribution cards -->
+<div class="row g-3 mb-4">
+    <div class="col-md-6">
+        <div class="card p-3">
+            <h6 class="text-secondary">Events by Severity</h6>
+            <div class="d-flex gap-3 flex-wrap mt-2">
+                {% for sev, cnt in stats.severity_distribution.items() %}
+                <div>
+                    <span class="badge badge-{{ sev }}">{{ sev | upper }}</span>
+                    <span class="text-light ms-1">{{ cnt }}</span>
+                </div>
+                {% endfor %}
+                {% if not stats.severity_distribution %}
+                <span class="text-secondary">No events yet</span>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card p-3">
+            <h6 class="text-secondary">Events by Source</h6>
+            <div class="d-flex gap-3 flex-wrap mt-2">
+                {% for src, cnt in stats.source_distribution.items() %}
+                <div>
+                    <span class="badge bg-secondary">{{ src }}</span>
+                    <span class="text-light ms-1">{{ cnt }}</span>
+                </div>
+                {% endfor %}
+                {% if not stats.source_distribution %}
+                <span class="text-secondary">No events yet</span>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Recent alerts -->
+<div class="row g-3 mb-4">
+    <div class="col-12">
+        <div class="card p-3">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h6 class="text-secondary mb-0">Recent Alerts</h6>
+                <a href="/alerts" class="btn btn-sm btn-outline-secondary">View All</a>
+            </div>
+            {% if stats.recent_alerts %}
+            <div class="table-responsive">
+                <table class="table table-sm table-hover">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Severity</th>
+                            <th>Message</th>
+                            <th>Fired At</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for alert in stats.recent_alerts %}
+                        <tr>
+                            <td>{{ alert.id }}</td>
+                            <td><span class="badge badge-{{ alert.severity }}">{{ alert.severity | upper }}</span></td>
+                            <td class="msg-cell" title="{{ alert.message }}">{{ alert.message }}</td>
+                            <td class="text-secondary">{{ alert.fired_at }}</td>
+                            <td>
+                                {% if alert.acknowledged %}
+                                <span class="badge bg-secondary">ACK</span>
+                                {% else %}
+                                <span class="badge bg-danger">OPEN</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p class="text-secondary mb-0">No alerts have fired yet.</p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<!-- Recent events -->
+<div class="row g-3 mb-4">
+    <div class="col-12">
+        <div class="card p-3">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h6 class="text-secondary mb-0">Recent Events</h6>
+                <a href="/events" class="btn btn-sm btn-outline-secondary">View All</a>
+            </div>
+            {% if stats.recent_events %}
+            <div class="table-responsive">
+                <table class="table table-sm table-hover">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Source</th>
+                            <th>Type</th>
+                            <th>Severity</th>
+                            <th>Host</th>
+                            <th>User</th>
+                            <th>Message</th>
+                            <th>Timestamp</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for ev in stats.recent_events %}
+                        <tr>
+                            <td>{{ ev.id }}</td>
+                            <td><span class="badge bg-secondary">{{ ev.source }}</span></td>
+                            <td>{{ ev.event_type }}</td>
+                            <td><span class="badge badge-{{ ev.severity }}">{{ ev.severity }}</span></td>
+                            <td>{{ ev.host }}</td>
+                            <td>{{ ev.user }}</td>
+                            <td class="msg-cell" title="{{ ev.message }}">{{ ev.message }}</td>
+                            <td class="text-secondary">{{ ev.timestamp }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p class="text-secondary mb-0">No events ingested yet.</p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.getElementById('detectForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    const btn = document.getElementById('detectBtn');
+    btn.disabled = true;
+    btn.textContent = 'Running...';
+    fetch('/api/detect', { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+            btn.textContent = 'Done (' + data.alerts_fired + ' alerts)';
+            setTimeout(() => location.reload(), 1000);
+        })
+        .catch(() => { btn.textContent = 'Error'; btn.disabled = false; });
+});
+</script>
+{% endblock %}

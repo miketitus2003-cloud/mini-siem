@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Alert Rules — Mini SIEM{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <h4 class="text-light">Alert Rules</h4>
+        <p class="text-secondary mb-0">Detection rules evaluated against incoming events</p>
+    </div>
+</div>
+
+<div class="card p-3">
+    {% if rules %}
+    <div class="table-responsive">
+        <table class="table table-sm table-hover">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Severity</th>
+                    <th>Event Type</th>
+                    <th>Mode</th>
+                    <th>Condition</th>
+                    <th>Status</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for rule in rules %}
+                {% set cond = rule.condition_json | tojson if rule.condition_json is mapping else rule.condition_json %}
+                <tr>
+                    <td>{{ rule.id }}</td>
+                    <td>
+                        <strong>{{ rule.name }}</strong>
+                        {% if rule.description %}
+                        <br><small class="text-secondary">{{ rule.description }}</small>
+                        {% endif %}
+                    </td>
+                    <td><span class="badge badge-{{ rule.severity }}">{{ rule.severity | upper }}</span></td>
+                    <td><code>{{ rule.event_type }}</code></td>
+                    <td>
+                        {% set condition = rule.condition_json %}
+                        {% if '"threshold"' in condition %}
+                        <span class="badge bg-info text-dark">Threshold</span>
+                        {% else %}
+                        <span class="badge bg-primary">Single</span>
+                        {% endif %}
+                    </td>
+                    <td class="msg-cell"><code class="text-secondary" style="font-size:0.75rem">{{ rule.condition_json }}</code></td>
+                    <td>
+                        {% if rule.enabled %}
+                        <span class="badge bg-success">Enabled</span>
+                        {% else %}
+                        <span class="badge bg-secondary">Disabled</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <button class="btn btn-sm btn-outline-warning toggle-btn" data-id="{{ rule.id }}">
+                            {{ 'Disable' if rule.enabled else 'Enable' }}
+                        </button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p class="text-secondary mb-0">No alert rules configured.</p>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.querySelectorAll('.toggle-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+        const id = this.dataset.id;
+        this.disabled = true;
+        fetch('/api/rules/' + id + '/toggle', { method: 'POST' })
+            .then(r => r.json())
+            .then(() => location.reload())
+            .catch(() => { this.textContent = 'Error'; this.disabled = false; });
+    });
+});
+</script>
+{% endblock %}

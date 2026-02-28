@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}Alerts — Mini SIEM{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col">
+        <h4 class="text-light">Alert Viewer</h4>
+        <p class="text-secondary mb-0">Security alerts fired by detection rules</p>
+    </div>
+</div>
+
+<!-- Filter tabs -->
+<div class="mb-3">
+    <ul class="nav nav-pills nav-fill" style="max-width:400px">
+        <li class="nav-item">
+            <a class="nav-link {{ 'active' if show == 'unacknowledged' }}" href="/alerts?show=unacknowledged">Open</a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link {{ 'active' if show == 'acknowledged' }}" href="/alerts?show=acknowledged">Acknowledged</a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link {{ 'active' if show == 'all' }}" href="/alerts?show=all">All</a>
+        </li>
+    </ul>
+</div>
+
+<!-- Alerts table -->
+<div class="card p-3">
+    {% if alerts %}
+    <div class="table-responsive">
+        <table class="table table-sm table-hover">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Severity</th>
+                    <th>Rule</th>
+                    <th>Message</th>
+                    <th>Fired At</th>
+                    <th>Status</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for alert in alerts %}
+                <tr>
+                    <td>{{ alert.id }}</td>
+                    <td><span class="badge badge-{{ alert.severity }}">{{ alert.severity | upper }}</span></td>
+                    <td>{{ alert.rule_id }}</td>
+                    <td class="msg-cell" title="{{ alert.message }}">{{ alert.message }}</td>
+                    <td class="text-secondary text-nowrap">{{ alert.fired_at }}</td>
+                    <td>
+                        {% if alert.acknowledged %}
+                        <span class="badge bg-secondary">ACK</span>
+                        {% else %}
+                        <span class="badge bg-danger">OPEN</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if not alert.acknowledged %}
+                        <button class="btn btn-sm btn-outline-success ack-btn" data-id="{{ alert.id }}">
+                            Acknowledge
+                        </button>
+                        {% else %}
+                        <span class="text-secondary">—</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <nav class="mt-3">
+        <ul class="pagination pagination-sm justify-content-center">
+            {% if page > 1 %}
+            <li class="page-item">
+                <a class="page-link" href="/alerts?page={{ page - 1 }}&show={{ show }}">Previous</a>
+            </li>
+            {% endif %}
+            <li class="page-item active"><span class="page-link">Page {{ page }}</span></li>
+            {% if alerts | length == 50 %}
+            <li class="page-item">
+                <a class="page-link" href="/alerts?page={{ page + 1 }}&show={{ show }}">Next</a>
+            </li>
+            {% endif %}
+        </ul>
+    </nav>
+    {% else %}
+    <p class="text-secondary mb-0">No alerts to display.</p>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.querySelectorAll('.ack-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+        const id = this.dataset.id;
+        this.disabled = true;
+        this.textContent = '...';
+        fetch('/api/alerts/' + id + '/ack', { method: 'POST' })
+            .then(r => r.json())
+            .then(() => location.reload())
+            .catch(() => { this.textContent = 'Error'; this.disabled = false; });
+    });
+});
+</script>
+{% endblock %}
