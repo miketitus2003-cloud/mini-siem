@@ -26,7 +26,7 @@ DB_PATH = os.path.join(DB_DIR, "siem.db")
 
 _local = threading.local()
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # ──────────────────────────────────────────────
 # Schema DDL
@@ -39,6 +39,21 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS schema_version (
     version     INTEGER PRIMARY KEY
 );
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp   TEXT    NOT NULL,
+    username    TEXT    NOT NULL,
+    action      TEXT    NOT NULL,
+    target_type TEXT    DEFAULT '',
+    target_id   TEXT    DEFAULT '',
+    detail      TEXT    DEFAULT '',
+    ip_address  TEXT    DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_ts       ON audit_log(timestamp);
+CREATE INDEX IF NOT EXISTS idx_audit_username ON audit_log(username);
+CREATE INDEX IF NOT EXISTS idx_audit_action   ON audit_log(action);
 
 CREATE TABLE IF NOT EXISTS log_sources (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -211,6 +226,25 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 alert_id        INTEGER NOT NULL REFERENCES alerts(id) ON DELETE CASCADE,
                 PRIMARY KEY (incident_id, alert_id)
             );
+        """)
+        conn.commit()
+
+    # v3 → v4: audit_log table
+    if "audit_log" not in tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp   TEXT    NOT NULL,
+                username    TEXT    NOT NULL,
+                action      TEXT    NOT NULL,
+                target_type TEXT    DEFAULT '',
+                target_id   TEXT    DEFAULT '',
+                detail      TEXT    DEFAULT '',
+                ip_address  TEXT    DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_audit_ts       ON audit_log(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_audit_username ON audit_log(username);
+            CREATE INDEX IF NOT EXISTS idx_audit_action   ON audit_log(action);
         """)
         conn.commit()
 
@@ -760,4 +794,50 @@ def get_incident_alerts(incident_id: int, db_path: Optional[str] = None) -> List
         "WHERE ia.incident_id = ? ORDER BY a.fired_at DESC",
         (incident_id,),
     ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ──────────────────────────────────────────────
+# Audit log operations
+# ──────────────────────────────────────────────
+
+def write_audit(
+    username: str,
+    action: str,
+    target_type: str = "",
+    target_id: str = "",
+    detail: str = "",
+    ip_address: str = "",
+    db_path: Optional[str] = None,
+) -> int:
+    """Record an auditable action to the audit_log table."""
+    with transaction(db_path) as conn:
+        cur = conn.execute(
+            "INSERT INTO audit_log (timestamp, username, action, target_type, target_id, detail, ip_address) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (_utcnow(), username, action, target_type, str(target_id), detail[:500], ip_address),
+        )
+        return cur.lastrowid
+
+
+def get_audit_log(
+    username: Optional[str] = None,
+    action: Optional[str] = None,
+    limit: int = 200,
+    offset: int = 0,
+    db_path: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    conn = get_connection(db_path)
+    clauses: List[str] = []
+    params: List[Any] = []
+    if username:
+        clauses.append("username = ?")
+        params.append(username)
+    if action:
+        clauses.append("action = ?")
+        params.append(action)
+    where = "WHERE " + " AND ".join(clauses) if clauses else ""
+    sql = f"SELECT * FROM audit_log {where} ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+    rows = conn.execute(sql, params).fetchall()
     return [dict(r) for r in rows]

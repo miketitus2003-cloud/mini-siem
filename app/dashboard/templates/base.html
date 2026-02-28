@@ -143,6 +143,7 @@
                     {% if current_user.is_authenticated and current_user.is_admin %}
                     <li class="nav-item"><a class="nav-link {{ 'active' if request.path.startswith('/ingest') }}" href="/ingest">Ingest</a></li>
                     <li class="nav-item"><a class="nav-link {{ 'active' if request.path.startswith('/users') }}" href="/users">Users</a></li>
+                    <li class="nav-item"><a class="nav-link {{ 'active' if request.path.startswith('/audit') }}" href="/audit" style="color:#fb923c!important">Audit Log</a></li>
                     {% endif %}
                 </ul>
                 <ul class="navbar-nav ms-auto">

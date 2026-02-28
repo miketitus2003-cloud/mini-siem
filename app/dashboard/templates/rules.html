@@ -40,7 +40,9 @@
                     <td><code>{{ rule.event_type }}</code></td>
                     <td>
                         {% set condition = rule.condition_json %}
-                        {% if '"threshold"' in condition %}
+                        {% if '"correlation"' in condition %}
+                        <span class="badge bg-danger">Correlation</span>
+                        {% elif '"threshold"' in condition %}
                         <span class="badge bg-info text-dark">Threshold</span>
                         {% else %}
                         <span class="badge bg-primary">Single</span>
@@ -55,9 +57,13 @@
                         {% endif %}
                     </td>
                     <td>
+                        {% if current_user.is_admin %}
                         <button class="btn btn-sm btn-outline-warning toggle-btn" data-id="{{ rule.id }}">
                             {{ 'Disable' if rule.enabled else 'Enable' }}
                         </button>
+                        {% else %}
+                        <span class="text-muted small">—</span>
+                        {% endif %}
                     </td>
                 </tr>
                 {% endfor %}

@@ -30,6 +30,7 @@ from app.database import (
     get_alert_rules,
     get_alerts,
     get_all_users,
+    get_audit_log,
     get_incident,
     get_incident_alerts,
     get_incidents,
@@ -43,6 +44,7 @@ from app.database import (
     update_alert_rule,
     update_incident,
     update_user_role,
+    write_audit,
 )
 from app.alerts.engine import evaluate_all, run_detection_cycle
 from app.logs.windows import ingest_evtx_xml, load_sample_data as win_samples
@@ -64,6 +66,23 @@ def _require_admin():
     if not current_user.is_admin:
         return jsonify({"error": "Admin role required"}), 403
     return None
+
+
+def _client_ip() -> str:
+    return request.headers.get("X-Forwarded-For", request.remote_addr or "")
+
+
+def _audit(action: str, target_type: str = "", target_id: str = "", detail: str = ""):
+    """Write one audit record for the currently authenticated user."""
+    username = getattr(current_user, "username", "anonymous")
+    write_audit(
+        username=username,
+        action=action,
+        target_type=target_type,
+        target_id=str(target_id),
+        detail=detail,
+        ip_address=_client_ip(),
+    )
 
 
 def _extract_ip(metadata_json: str) -> str:
@@ -96,10 +115,16 @@ def login():
             from app import SIEMUser
             user = SIEMUser(row)
             login_user(user)
+            write_audit(username=username, action="login",
+                        detail="successful login", ip_address=_client_ip())
             next_page = request.args.get("next") or url_for("dashboard.index")
             if next_page.startswith("/"):
                 return redirect(next_page)
             return redirect(url_for("dashboard.index"))
+        write_audit(
+            username=username or "unknown", action="login_failed",
+            detail="invalid credentials", ip_address=_client_ip(),
+        )
         flash("Invalid username or password.", "danger")
 
     return render_template("login.html")
@@ -108,6 +133,7 @@ def login():
 @bp.route("/logout")
 @login_required
 def logout():
+    _audit("logout")
     logout_user()
     return redirect(url_for("dashboard.login"))
 
@@ -271,17 +297,30 @@ def api_alerts():
 @bp.route("/api/alerts/<int:alert_id>/ack", methods=["POST"])
 @login_required
 def api_ack_alert(alert_id: int):
+    if current_user.is_viewer:
+        return jsonify({"error": "Read-only role cannot acknowledge alerts"}), 403
     acknowledge_alert(alert_id)
+    _audit("alert_ack", target_type="alert", target_id=alert_id)
     return jsonify({"ok": True})
 
 
 @bp.route("/api/alerts/<int:alert_id>/note", methods=["POST"])
 @login_required
 def api_alert_note(alert_id: int):
+    if current_user.is_viewer:
+        return jsonify({"error": "Read-only role cannot add notes"}), 403
     data = request.get_json(silent=True) or {}
     note = str(data.get("note", "")).strip()
     add_alert_note(alert_id, note)
+    _audit("alert_note", target_type="alert", target_id=alert_id,
+           detail=note[:120])
     return jsonify({"ok": True})
+
+
+_MAX_INGEST_BYTES = 2 * 1024 * 1024   # 2 MB hard limit
+_MAX_INGEST_LINES = 5_000             # line-based sources
+_MAX_INGEST_RECORDS = 1_000           # JSON array sources
+_VALID_SOURCES = frozenset(("windows", "linux", "azure", "firewall", "endpoint"))
 
 
 @bp.route("/api/ingest", methods=["POST"])
@@ -291,35 +330,72 @@ def api_ingest():
     if err:
         return err
 
-    payload = request.get_json(silent=True)
-    if not payload:
-        return jsonify({"error": "JSON body required"}), 400
+    # Size guard — reject before parsing
+    if request.content_length and request.content_length > _MAX_INGEST_BYTES:
+        return jsonify({"error": "Payload too large (max 2 MB)"}), 413
 
-    source = payload.get("source", "").lower()
+    payload = request.get_json(silent=True)
+    if not payload or not isinstance(payload, dict):
+        return jsonify({"error": "JSON object body required"}), 400
+
+    source = str(payload.get("source", "")).lower().strip()
     data = payload.get("data")
-    if source not in ("windows", "linux", "azure", "firewall", "endpoint"):
-        return jsonify({"error": "source must be windows, linux, azure, firewall, or endpoint"}), 400
-    if not data:
-        return jsonify({"error": "data field required"}), 400
+
+    if source not in _VALID_SOURCES:
+        return jsonify({
+            "error": "source must be one of: windows, linux, azure, firewall, endpoint"
+        }), 400
+    if data is None or data == "" or data == []:
+        return jsonify({"error": "data field required and must not be empty"}), 400
+
+    # Per-source data type validation
+    if source == "windows":
+        if not isinstance(data, str):
+            return jsonify({"error": "windows source expects a string (XML)"}), 400
+        if len(data) > _MAX_INGEST_BYTES:
+            return jsonify({"error": "Payload too large"}), 413
+    elif source in ("linux", "firewall"):
+        if isinstance(data, str):
+            lines = data.splitlines()
+        elif isinstance(data, list):
+            lines = [str(x) for x in data]
+        else:
+            return jsonify({"error": f"{source} source expects a string or list of strings"}), 400
+        if len(lines) > _MAX_INGEST_LINES:
+            return jsonify({"error": f"Too many lines (max {_MAX_INGEST_LINES})"}), 413
+    elif source == "azure":
+        if isinstance(data, list):
+            records = data
+        elif isinstance(data, dict):
+            records = [data]
+        else:
+            return jsonify({"error": "azure source expects a JSON array or object"}), 400
+        if len(records) > _MAX_INGEST_RECORDS:
+            return jsonify({"error": f"Too many records (max {_MAX_INGEST_RECORDS})"}), 413
+    elif source == "endpoint":
+        if isinstance(data, str):
+            pass  # NDJSON string — validated inside ingest_endpoint_events
+        elif not isinstance(data, (list, dict)):
+            return jsonify({"error": "endpoint source expects JSON object, array, or NDJSON string"}), 400
 
     try:
         if source == "windows":
             event_ids = ingest_evtx_xml(data)
         elif source == "linux":
-            lines = data if isinstance(data, list) else data.splitlines()
             event_ids = ingest_syslog_lines(lines)
         elif source == "azure":
-            event_ids = ingest_azure_logs(data if isinstance(data, list) else [data])
+            event_ids = ingest_azure_logs(records)
         elif source == "firewall":
-            lines = data if isinstance(data, list) else data.splitlines()
             event_ids = ingest_firewall_lines(lines)
         else:  # endpoint
             event_ids = ingest_endpoint_events(data)
-    except Exception as exc:
-        logger.exception("Ingestion error")
-        return jsonify({"error": str(exc)}), 500
+    except Exception:
+        logger.exception("Ingestion error for source=%s", source)
+        return jsonify({"error": "Ingestion failed — check server logs for details"}), 500
 
     alerts = evaluate_all(recent_event_ids=event_ids)
+    _audit("ingest", target_type="source", target_id=source,
+           detail=f"events={len(event_ids)} alerts={len(alerts)}")
     return jsonify({"events_created": len(event_ids), "alerts_fired": len(alerts)})
 
 
@@ -349,13 +425,18 @@ def api_ingest_sample():
         return jsonify({"error": f"Unknown source: {source}"}), 400
 
     alerts = evaluate_all(recent_event_ids=event_ids)
+    _audit("ingest_sample", target_type="source", target_id=source,
+           detail=f"events={len(event_ids)} alerts={len(alerts)}")
     return jsonify({"events_created": len(event_ids), "alerts_fired": len(alerts)})
 
 
 @bp.route("/api/detect", methods=["POST"])
 @login_required
 def api_detect():
+    if current_user.is_viewer:
+        return jsonify({"error": "Read-only role"}), 403
     result = run_detection_cycle()
+    _audit("detect_cycle", detail=f"alerts_fired={result.get('alerts_fired', 0)}")
     return jsonify(result)
 
 
@@ -383,6 +464,8 @@ def api_toggle_rule(rule_id: int):
         new_state = 0 if current["enabled"] else 1
 
     update_alert_rule(rule_id, {"enabled": new_state})
+    _audit("rule_toggle", target_type="rule", target_id=rule_id,
+           detail=f"enabled={bool(new_state)}")
     return jsonify({"ok": True, "enabled": bool(new_state)})
 
 
@@ -449,6 +532,8 @@ def api_create_incident():
     if severity not in ("low", "medium", "high", "critical"):
         return jsonify({"error": "invalid severity"}), 400
 
+    if current_user.is_viewer:
+        return jsonify({"error": "Read-only role"}), 403
     inc_id = create_incident(title, description, severity, assigned_to)
     # Link alert IDs if provided
     for alert_id in data.get("alert_ids", []):
@@ -456,6 +541,8 @@ def api_create_incident():
             link_alert_to_incident(inc_id, int(alert_id))
         except Exception:
             pass
+    _audit("incident_create", target_type="incident", target_id=inc_id,
+           detail=f"title={title[:80]} severity={severity}")
     return jsonify({"ok": True, "incident_id": inc_id})
 
 
@@ -467,18 +554,26 @@ def api_update_incident(incident_id: int):
     updates = {k: v for k, v in data.items() if k in allowed}
     if not updates:
         return jsonify({"error": "no valid fields"}), 400
+    if current_user.is_viewer:
+        return jsonify({"error": "Read-only role"}), 403
     update_incident(incident_id, updates)
+    _audit("incident_update", target_type="incident", target_id=incident_id,
+           detail=str(list(updates.keys())))
     return jsonify({"ok": True})
 
 
 @bp.route("/api/incidents/<int:incident_id>/alerts", methods=["POST"])
 @login_required
 def api_link_alert(incident_id: int):
+    if current_user.is_viewer:
+        return jsonify({"error": "Read-only role"}), 403
     data = request.get_json(silent=True) or {}
     alert_id = data.get("alert_id")
     if not alert_id:
         return jsonify({"error": "alert_id required"}), 400
     link_alert_to_incident(incident_id, int(alert_id))
+    _audit("incident_link_alert", target_type="incident", target_id=incident_id,
+           detail=f"alert_id={alert_id}")
     return jsonify({"ok": True})
 
 
@@ -518,6 +613,8 @@ def api_create_user():
     if get_user_by_username(username):
         return jsonify({"error": "username already exists"}), 409
     uid = db_create_user(username, generate_password_hash(password), role=role)
+    _audit("user_create", target_type="user", target_id=uid,
+           detail=f"username={username} role={role}")
     return jsonify({"ok": True, "user_id": uid})
 
 
@@ -532,6 +629,8 @@ def api_update_user_role(user_id: int):
     if role not in ("admin", "analyst", "viewer"):
         return jsonify({"error": "role must be admin, analyst, or viewer"}), 400
     update_user_role(user_id, role)
+    _audit("user_role_change", target_type="user", target_id=user_id,
+           detail=f"new_role={role}")
     return jsonify({"ok": True})
 
 
@@ -544,4 +643,37 @@ def api_delete_user(user_id: int):
     if str(user_id) == current_user.id:
         return jsonify({"error": "Cannot delete your own account"}), 400
     delete_user(user_id)
+    _audit("user_delete", target_type="user", target_id=user_id)
     return jsonify({"ok": True})
+
+
+# ──────────────────────────────────────────────
+# Audit Log page (admin only)
+# ──────────────────────────────────────────────
+
+@bp.route("/audit")
+@login_required
+def audit_page():
+    err = _require_admin()
+    if err:
+        flash("Admin access required.", "danger")
+        return redirect(url_for("dashboard.index"))
+    page = request.args.get("page", 1, type=int)
+    per_page = 100
+    offset = (page - 1) * per_page
+    username_filter = request.args.get("username", "")
+    action_filter = request.args.get("action", "")
+    entries = get_audit_log(
+        username=username_filter or None,
+        action=action_filter or None,
+        limit=per_page,
+        offset=offset,
+    )
+    return render_template(
+        "audit.html",
+        entries=entries,
+        page=page,
+        per_page=per_page,
+        username_filter=username_filter,
+        action_filter=action_filter,
+    )

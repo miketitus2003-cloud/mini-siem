@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}{{ code }} — Mini SIEM{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-center" style="min-height:40vh">
+    <div class="text-center">
+        <div style="font-size:4rem;font-weight:700;color:var(--siem-border)">{{ code }}</div>
+        <h4 class="mt-2" style="color:var(--siem-muted)">{{ message }}</h4>
+        <p class="text-muted small mt-3">
+            {% if code == 404 %}
+            The page you're looking for doesn't exist.
+            {% elif code == 403 %}
+            You don't have permission to access this resource.
+            {% elif code == 400 %}
+            The request was invalid or malformed.
+            {% else %}
+            An unexpected error occurred. Please try again.
+            {% endif %}
+        </p>
+        <a href="/" class="btn btn-outline-secondary mt-2">Go to Dashboard</a>
+    </div>
+</div>
+{% endblock %}

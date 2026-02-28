@@ -14,7 +14,7 @@ import logging
 import os
 from typing import Optional
 
-from flask import Flask
+from flask import Flask, render_template, make_response
 from flask_login import LoginManager, UserMixin
 from werkzeug.security import generate_password_hash
 
@@ -27,6 +27,12 @@ from app.database import (
     seed_log_sources,
 )
 from app.alerts.engine import seed_default_rules
+
+
+def render_error(code: int, message: str):
+    """Render a safe error page without exposing internals."""
+    resp = make_response(render_template("error.html", code=code, message=message), code)
+    return resp
 
 
 # ── Flask-Login User model ────────────────────
@@ -125,6 +131,34 @@ def create_app(db_path: Optional[str] = None, load_samples: bool = False) -> Fla
     @app.teardown_appcontext
     def shutdown_session(exception=None):
         close_connection()
+
+    # ── Error handlers (no stack traces to clients) ──
+    from flask import request as _req, jsonify as _jsn
+
+    @app.errorhandler(400)
+    def bad_request(e):
+        if _req.path.startswith("/api/"):
+            return _jsn({"error": "Bad request"}), 400
+        return render_error(400, "Bad Request")
+
+    @app.errorhandler(403)
+    def forbidden(e):
+        if _req.path.startswith("/api/"):
+            return _jsn({"error": "Forbidden"}), 403
+        return render_error(403, "Access Denied")
+
+    @app.errorhandler(404)
+    def not_found(e):
+        if _req.path.startswith("/api/"):
+            return _jsn({"error": "Not found"}), 404
+        return render_error(404, "Page Not Found")
+
+    @app.errorhandler(500)
+    def server_error(e):
+        logger.exception("Unhandled 500 error")
+        if _req.path.startswith("/api/"):
+            return _jsn({"error": "Internal server error"}), 500
+        return render_error(500, "Internal Server Error")
 
     logger.info("Mini SIEM application ready")
     return app
