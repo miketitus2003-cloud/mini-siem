@@ -72,6 +72,7 @@ DEFAULT_RULES: List[Dict[str, Any]] = [
         ),
         "severity": "high",
         "event_type": "login_failure",
+        "mitre_technique": "T1110",
         "condition_json": json.dumps({
             "mode": "threshold",
             "threshold": 5,
@@ -88,6 +89,7 @@ DEFAULT_RULES: List[Dict[str, Any]] = [
         ),
         "severity": "high",
         "event_type": "login_failure",
+        "mitre_technique": "T1110",
         "condition_json": json.dumps({
             "mode": "threshold",
             "threshold": 5,
@@ -104,6 +106,7 @@ DEFAULT_RULES: List[Dict[str, Any]] = [
         ),
         "severity": "high",
         "event_type": "login_failure",
+        "mitre_technique": "T1110",
         "condition_json": json.dumps({
             "mode": "threshold",
             "threshold": 3,
@@ -117,6 +120,7 @@ DEFAULT_RULES: List[Dict[str, Any]] = [
         "description": "Fires on any account-lockout event across all sources.",
         "severity": "high",
         "event_type": "account_lockout",
+        "mitre_technique": "T1110.001",
         "condition_json": json.dumps({
             "mode": "single",
             "field_filters": {},
@@ -130,6 +134,7 @@ DEFAULT_RULES: List[Dict[str, Any]] = [
         ),
         "severity": "medium",
         "event_type": "privilege_assigned",
+        "mitre_technique": "T1068",
         "condition_json": json.dumps({
             "mode": "single",
             "field_filters": {},
@@ -143,6 +148,7 @@ DEFAULT_RULES: List[Dict[str, Any]] = [
         ),
         "severity": "critical",
         "event_type": "log_cleared",
+        "mitre_technique": "T1070.001",
         "condition_json": json.dumps({
             "mode": "single",
             "field_filters": {},
@@ -153,6 +159,7 @@ DEFAULT_RULES: List[Dict[str, Any]] = [
         "description": "Detects new user account creation across all sources.",
         "severity": "medium",
         "event_type": "account_created",
+        "mitre_technique": "T1136",
         "condition_json": json.dumps({
             "mode": "single",
             "field_filters": {},
@@ -166,6 +173,7 @@ DEFAULT_RULES: List[Dict[str, Any]] = [
         ),
         "severity": "high",
         "event_type": "sensitive_file_access",
+        "mitre_technique": "T1548.003",
         "condition_json": json.dumps({
             "mode": "single",
             "field_filters": {"source": "linux"},
@@ -178,6 +186,7 @@ DEFAULT_RULES: List[Dict[str, Any]] = [
         ),
         "severity": "medium",
         "event_type": "group_member_added",
+        "mitre_technique": "T1098",
         "condition_json": json.dumps({
             "mode": "single",
             "field_filters": {},
@@ -191,6 +200,7 @@ DEFAULT_RULES: List[Dict[str, Any]] = [
         ),
         "severity": "high",
         "event_type": "login_failure",
+        "mitre_technique": "T1556",
         "condition_json": json.dumps({
             "mode": "single",
             "field_filters": {"source": "azure"},
@@ -205,6 +215,7 @@ DEFAULT_RULES: List[Dict[str, Any]] = [
         ),
         "severity": "high",
         "event_type": "connection_blocked",
+        "mitre_technique": "T1046",
         "condition_json": json.dumps({
             "mode": "threshold",
             "threshold": 8,
@@ -220,6 +231,7 @@ DEFAULT_RULES: List[Dict[str, Any]] = [
         ),
         "severity": "high",
         "event_type": "connection_blocked",
+        "mitre_technique": "T1021",
         "condition_json": json.dumps({
             "mode": "single",
             "field_filters": {"source": "firewall"},
@@ -234,6 +246,7 @@ DEFAULT_RULES: List[Dict[str, Any]] = [
         ),
         "severity": "high",
         "event_type": "process_created",
+        "mitre_technique": "T1059",
         "condition_json": json.dumps({
             "mode": "single",
             "field_filters": {"source": "endpoint", "severity": "high"},
@@ -247,6 +260,7 @@ DEFAULT_RULES: List[Dict[str, Any]] = [
         ),
         "severity": "critical",
         "event_type": "process_access",
+        "mitre_technique": "T1003.001",
         "condition_json": json.dumps({
             "mode": "single",
             "field_filters": {"source": "endpoint"},
@@ -261,6 +275,7 @@ DEFAULT_RULES: List[Dict[str, Any]] = [
         ),
         "severity": "critical",
         "event_type": "login_failure",
+        "mitre_technique": "T1078",
         "condition_json": json.dumps({
             "mode": "correlation",
             "failure_threshold": 3,
@@ -277,13 +292,21 @@ DEFAULT_RULES: List[Dict[str, Any]] = [
 # ──────────────────────────────────────────────
 
 def seed_default_rules(db_path: Optional[str] = None) -> int:
-    """Insert ``DEFAULT_RULES`` that do not already exist. Returns count inserted."""
-    existing = {r["name"] for r in get_alert_rules(enabled_only=False, db_path=db_path)}
+    """Insert ``DEFAULT_RULES`` that do not already exist. Returns count inserted.
+    Also backfills mitre_technique on rules that were seeded before v5."""
+    existing_rules = {r["name"]: r for r in get_alert_rules(enabled_only=False, db_path=db_path)}
     inserted = 0
     for rule in DEFAULT_RULES:
-        if rule["name"] not in existing:
+        if rule["name"] not in existing_rules:
             insert_alert_rule(rule, db_path=db_path)
             inserted += 1
+        elif not existing_rules[rule["name"]].get("mitre_technique") and rule.get("mitre_technique"):
+            # Backfill technique on existing rows that predate schema v5
+            update_alert_rule(
+                existing_rules[rule["name"]]["id"],
+                {"mitre_technique": rule["mitre_technique"]},
+                db_path=db_path,
+            )
     if inserted:
         logger.info("Seeded %d default alert rules", inserted)
     return inserted

@@ -2,10 +2,15 @@
 {% block title %}Alerts — Mini SIEM{% endblock %}
 
 {% block content %}
-<div class="row mb-4">
-    <div class="col">
+<div class="d-flex align-items-start justify-content-between mb-4 flex-wrap gap-2">
+    <div>
         <h4 class="mb-0">Alert Viewer</h4>
         <p class="text-muted small mb-0">Security alerts fired by detection rules</p>
+    </div>
+    <div>
+        <span class="badge bg-secondary" style="font-size:0.72rem">
+            SLA escalation: low &rarr; medium after 1h &middot; &rarr; high after 4h &middot; &rarr; critical after 12h (open only)
+        </span>
     </div>
 </div>
 
@@ -40,7 +45,7 @@
                 <tr>
                     <th>ID</th>
                     <th>Severity</th>
-                    <th>Rule</th>
+                    <th>MITRE</th>
                     <th>Message</th>
                     <th>Note</th>
                     <th>Fired At</th>
@@ -50,10 +55,25 @@
             </thead>
             <tbody>
                 {% for alert in alerts %}
+                {% set rule = rules_by_id.get(alert.rule_id, {}) %}
                 <tr>
                     <td>{{ alert.id }}</td>
-                    <td><span class="badge badge-{{ alert.severity }}">{{ alert.severity | upper }}</span></td>
-                    <td>{{ alert.rule_id }}</td>
+                    <td>
+                        <span class="badge badge-{{ alert.display_severity }}">{{ alert.display_severity | upper }}</span>
+                        {% if alert.severity_escalated %}
+                        <br><small class="text-muted" style="font-size:0.7rem">&#8593; was {{ alert.severity }}</small>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if rule.mitre_technique %}
+                        {% set tid = rule.mitre_technique.split('.')[0] %}
+                        <a href="https://attack.mitre.org/techniques/{{ tid }}/"
+                           target="_blank" rel="noopener"
+                           style="color:var(--siem-accent);font-size:0.78rem;white-space:nowrap">
+                            {{ rule.mitre_technique }}
+                        </a>
+                        {% else %}<span class="text-muted">—</span>{% endif %}
+                    </td>
                     <td class="msg-cell" title="{{ alert.message }}">{{ alert.message }}</td>
                     <td class="msg-cell" style="max-width:200px;color:var(--siem-muted);font-size:0.82rem"
                         title="{{ alert.notes or '' }}">

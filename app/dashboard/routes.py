@@ -30,6 +30,7 @@ from app.database import (
     add_alert_note,
     create_incident,
     dashboard_stats,
+    delete_alert_rule,
     delete_user,
     events_per_hour_last_24h,
     get_alert_rules,
@@ -37,12 +38,14 @@ from app.database import (
     get_all_alerts_for_export,
     get_all_users,
     get_audit_log,
+    get_events_for_incident,
     get_events_since_id,
     get_incident,
     get_incident_alerts,
     get_incidents,
     get_log_sources,
     get_user_by_username,
+    insert_alert_rule,
     link_alert_to_incident,
     query_events,
     query_events_with_time_range,
@@ -254,12 +257,41 @@ def alerts_page():
         ack_filter = None
 
     alerts = get_alerts(acknowledged=ack_filter, limit=per_page, offset=offset)
+    rules_by_id = {r["id"]: r for r in get_alert_rules(enabled_only=False)}
+
+    # Pre-compute SLA severity escalation for display (open alerts only)
+    _sev_order = ["low", "medium", "high", "critical"]
+    _now = datetime.now(timezone.utc)
+    for a in alerts:
+        orig = a["severity"]
+        if a["acknowledged"]:
+            a["display_severity"] = orig
+            a["severity_escalated"] = False
+        else:
+            try:
+                fired = datetime.fromisoformat(a["fired_at"].replace("Z", "+00:00"))
+                age_h = (_now - fired).total_seconds() / 3600
+            except (ValueError, TypeError):
+                age_h = 0
+            idx = _sev_order.index(orig) if orig in _sev_order else 0
+            if age_h >= 12:
+                new_idx = 3  # critical
+            elif age_h >= 4:
+                new_idx = max(idx, 2)  # at least high
+            elif age_h >= 1:
+                new_idx = max(idx, 1)  # at least medium
+            else:
+                new_idx = idx
+            a["display_severity"] = _sev_order[new_idx]
+            a["severity_escalated"] = new_idx > idx
+
     return render_template(
         "alerts.html",
         alerts=alerts,
         page=page,
         per_page=per_page,
         show=show,
+        rules_by_id=rules_by_id,
     )
 
 
@@ -494,6 +526,110 @@ def api_toggle_rule(rule_id: int):
     return jsonify({"ok": True, "enabled": bool(new_state)})
 
 
+_VALID_SEVERITIES = frozenset(("low", "medium", "high", "critical"))
+_VALID_MODES = frozenset(("single", "threshold", "correlation"))
+
+
+@bp.route("/api/rules", methods=["POST"])
+@login_required
+def api_create_rule():
+    err = _require_admin()
+    if err:
+        return err
+    data = request.get_json(silent=True) or {}
+    name = str(data.get("name", "")).strip()
+    event_type = str(data.get("event_type", "")).strip()
+    severity = str(data.get("severity", "")).lower()
+    condition = data.get("condition", {})
+
+    if not name:
+        return jsonify({"error": "name is required"}), 400
+    if severity not in _VALID_SEVERITIES:
+        return jsonify({"error": f"severity must be one of {sorted(_VALID_SEVERITIES)}"}), 400
+    if not event_type:
+        return jsonify({"error": "event_type is required"}), 400
+    if not isinstance(condition, dict) or condition.get("mode") not in _VALID_MODES:
+        return jsonify({"error": f"condition.mode must be one of {sorted(_VALID_MODES)}"}), 400
+
+    # Validate numeric fields
+    for field in ("threshold", "failure_threshold", "window_seconds"):
+        if field in condition and not isinstance(condition[field], int) or (
+            isinstance(condition.get(field), int) and condition[field] < 1
+        ):
+            if field in condition:
+                return jsonify({"error": f"{field} must be a positive integer"}), 400
+
+    rule = {
+        "name": name,
+        "description": str(data.get("description", "")).strip(),
+        "severity": severity,
+        "event_type": event_type,
+        "mitre_technique": str(data.get("mitre_technique", "")).strip(),
+        "condition_json": json.dumps(condition),
+        "enabled": 1,
+    }
+    try:
+        new_id = insert_alert_rule(rule)
+    except Exception as exc:
+        if "UNIQUE" in str(exc):
+            return jsonify({"error": "A rule with that name already exists"}), 409
+        raise
+    _audit("rule_create", target_type="rule", target_id=new_id, detail=f"name={name}")
+    return jsonify({"ok": True, "id": new_id}), 201
+
+
+@bp.route("/api/rules/<int:rule_id>", methods=["PUT"])
+@login_required
+def api_update_rule(rule_id: int):
+    err = _require_admin()
+    if err:
+        return err
+    rules = get_alert_rules(enabled_only=False)
+    rule = next((r for r in rules if r["id"] == rule_id), None)
+    if rule is None:
+        return jsonify({"error": "Rule not found"}), 404
+
+    data = request.get_json(silent=True) or {}
+    updates = {}
+    if "name" in data:
+        updates["name"] = str(data["name"]).strip()
+    if "description" in data:
+        updates["description"] = str(data["description"]).strip()
+    if "severity" in data:
+        sev = str(data["severity"]).lower()
+        if sev not in _VALID_SEVERITIES:
+            return jsonify({"error": f"severity must be one of {sorted(_VALID_SEVERITIES)}"}), 400
+        updates["severity"] = sev
+    if "event_type" in data:
+        updates["event_type"] = str(data["event_type"]).strip()
+    if "mitre_technique" in data:
+        updates["mitre_technique"] = str(data["mitre_technique"]).strip()
+    if "condition" in data:
+        cond = data["condition"]
+        if not isinstance(cond, dict) or cond.get("mode") not in _VALID_MODES:
+            return jsonify({"error": f"condition.mode must be one of {sorted(_VALID_MODES)}"}), 400
+        updates["condition_json"] = json.dumps(cond)
+
+    if updates:
+        update_alert_rule(rule_id, updates)
+        _audit("rule_update", target_type="rule", target_id=rule_id,
+               detail=f"fields={list(updates.keys())}")
+    return jsonify({"ok": True})
+
+
+@bp.route("/api/rules/<int:rule_id>", methods=["DELETE"])
+@login_required
+def api_delete_rule(rule_id: int):
+    err = _require_admin()
+    if err:
+        return err
+    ok = delete_alert_rule(rule_id)
+    if not ok:
+        return jsonify({"error": "Cannot delete rule that has associated alerts"}), 400
+    _audit("rule_delete", target_type="rule", target_id=rule_id)
+    return jsonify({"ok": True})
+
+
 # ──────────────────────────────────────────────
 # Log Sources page
 # ──────────────────────────────────────────────
@@ -535,11 +671,13 @@ def incident_detail(incident_id: int):
         return redirect(url_for("dashboard.incidents_page"))
     linked_alerts = get_incident_alerts(incident_id)
     open_alerts = [a for a in get_alerts(acknowledged=False, limit=200) if a["id"] not in {la["id"] for la in linked_alerts}]
+    timeline_events = get_events_for_incident(incident_id)
     return render_template(
         "incident_detail.html",
         incident=inc,
         linked_alerts=linked_alerts,
         open_alerts=open_alerts,
+        timeline_events=timeline_events,
     )
 
 

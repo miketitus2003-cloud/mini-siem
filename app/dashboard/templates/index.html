@@ -8,7 +8,10 @@
         <p class="text-muted small mb-0">Real-time security posture summary</p>
     </div>
     <div class="d-flex align-items-center gap-3">
-        <span class="text-muted small" id="refreshLabel">Last refreshed: {{ last_refreshed }}</span>
+        <span class="text-muted small">
+            <span id="refreshDot" style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#4ade80;margin-right:5px;vertical-align:middle"></span>
+            Last refreshed: <span id="refreshTime">{{ last_refreshed }}</span>
+        </span>
         <form method="POST" action="/api/detect" id="detectForm">
             <button type="submit" class="btn btn-outline-info btn-sm" id="detectBtn">Run Detection Cycle</button>
         </form>
@@ -20,19 +23,19 @@
     <div class="col-md-2 col-sm-6">
         <div class="card stat-card p-3">
             <div class="stat-label">Total Events</div>
-            <div class="stat-number" style="color:var(--siem-accent)">{{ stats.total_events }}</div>
+            <div class="stat-number" style="color:var(--siem-accent)" id="statTotalEvents">{{ stats.total_events }}</div>
         </div>
     </div>
     <div class="col-md-2 col-sm-6">
         <div class="card stat-card p-3">
             <div class="stat-label">Total Alerts</div>
-            <div class="stat-number" style="color:var(--sev-high)">{{ stats.total_alerts }}</div>
+            <div class="stat-number" style="color:var(--sev-high)" id="statTotalAlerts">{{ stats.total_alerts }}</div>
         </div>
     </div>
     <div class="col-md-2 col-sm-6">
         <div class="card stat-card p-3">
             <div class="stat-label">Unacknowledged</div>
-            <div class="stat-number" style="color:var(--sev-critical)">{{ stats.unacknowledged_alerts }}</div>
+            <div class="stat-number" style="color:var(--sev-critical)" id="statUnacked">{{ stats.unacknowledged_alerts }}</div>
         </div>
     </div>
     <div class="col-md-2 col-sm-6">
@@ -44,13 +47,13 @@
     <div class="col-md-2 col-sm-6">
         <div class="card stat-card p-3">
             <div class="stat-label">Sources Active</div>
-            <div class="stat-number" style="color:var(--sev-low)">{{ stats.source_distribution | length }}</div>
+            <div class="stat-number" style="color:var(--sev-low)" id="statSources">{{ stats.source_distribution | length }}</div>
         </div>
     </div>
     <div class="col-md-2 col-sm-6">
         <div class="card stat-card p-3">
             <div class="stat-label">Critical Events</div>
-            <div class="stat-number" style="color:var(--sev-critical)">{{ stats.severity_distribution.get('critical', 0) }}</div>
+            <div class="stat-number" style="color:var(--sev-critical)" id="statCritical">{{ stats.severity_distribution.get('critical', 0) }}</div>
         </div>
     </div>
 </div>
@@ -222,100 +225,114 @@ document.getElementById('detectForm').addEventListener('submit', function(e) {
         .catch(() => { btn.textContent = 'Error'; btn.disabled = false; });
 });
 
-// Auto-refresh every 30 seconds
-setTimeout(() => location.reload(), 30000);
+// ── Auto-refresh stat cards every 30 seconds ──────────────────────────────
+let hourlyChart = null, sevChart = null, srcChart = null;
 
-{% if hourly %}
-// Hourly events bar chart
-const hourlyData = {{ hourly | tojson }};
-const labels = hourlyData.map(d => {
-    const h = new Date(d.hour + ':00Z');
-    return h.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
-});
-const counts = hourlyData.map(d => d.count);
-
-new Chart(document.getElementById('hourlyChart'), {
-    type: 'bar',
-    data: {
-        labels,
-        datasets: [{
-            label: 'Events',
-            data: counts,
-            backgroundColor: 'rgba(96, 165, 250, 0.5)',
-            borderColor: 'rgba(96, 165, 250, 0.9)',
-            borderWidth: 1,
-        }]
-    },
-    options: {
-        responsive: true,
-        plugins: { legend: { display: false } },
-        scales: {
-            x: {
-                ticks: { color: '#94a3b8', font: { size: 10 }, maxRotation: 45 },
-                grid: { color: '#2d3f55' }
-            },
-            y: {
-                ticks: { color: '#94a3b8', stepSize: 1 },
-                grid: { color: '#2d3f55' },
-                beginAtZero: true
+// Initialise charts on first load (reuse existing code below)
+function _buildHourly(data) {
+    const labels = data.map(d => {
+        const h = new Date(d.hour + ':00Z');
+        return h.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+    });
+    const counts = data.map(d => d.count);
+    if (hourlyChart) hourlyChart.destroy();
+    const el = document.getElementById('hourlyChart');
+    if (!el) return;
+    hourlyChart = new Chart(el, {
+        type: 'bar',
+        data: { labels, datasets: [{ label: 'Events', data: counts,
+            backgroundColor: 'rgba(96,165,250,0.5)', borderColor: 'rgba(96,165,250,0.9)', borderWidth: 1 }] },
+        options: { responsive: true, plugins: { legend: { display: false } },
+            scales: {
+                x: { ticks: { color: '#94a3b8', font: { size: 10 }, maxRotation: 45 }, grid: { color: '#2d3f55' } },
+                y: { ticks: { color: '#94a3b8', stepSize: 1 }, grid: { color: '#2d3f55' }, beginAtZero: true }
             }
         }
-    }
-});
+    });
+}
+
+function _buildDonut(id, chartRef, labels, values, colors) {
+    if (chartRef) chartRef.destroy();
+    const el = document.getElementById(id);
+    if (!el) return null;
+    return new Chart(el, {
+        type: 'doughnut',
+        data: { labels, datasets: [{ data: values, backgroundColor: colors, borderColor: '#1a2535', borderWidth: 2 }] },
+        options: { responsive: true, cutout: '62%',
+            plugins: { legend: { position: 'bottom', labels: { color: '#94a3b8', font: { size: 10 }, padding: 8 } } }
+        }
+    });
+}
+
+function refreshStats() {
+    const dot = document.getElementById('refreshDot');
+    if (dot) { dot.style.background = '#fbbf24'; }  // amber while loading
+
+    fetch('/api/stats')
+        .then(r => r.json())
+        .then(data => {
+            // Stat cards
+            const s = data.stats || data;
+            _setText('statTotalEvents',   s.total_events);
+            _setText('statTotalAlerts',   s.total_alerts);
+            _setText('statUnacked',        s.unacknowledged_alerts);
+            _setText('statSources',        Object.keys(s.source_distribution || {}).length);
+            _setText('statCritical',       (s.severity_distribution || {}).critical || 0);
+
+            // Severity donut
+            const sevOrder  = ['critical','high','medium','low'];
+            const sevColors = ['#f87171','#fbbf24','#facc15','#4ade80'];
+            const sevDist   = s.severity_distribution || {};
+            const sevLabels = sevOrder.filter(k => sevDist[k] !== undefined);
+            const sevValues = sevLabels.map(k => sevDist[k]);
+            const sevClrs   = sevLabels.map(k => sevColors[sevOrder.indexOf(k)]);
+            sevChart = _buildDonut('sevChart', sevChart, sevLabels.map(x => x.toUpperCase()), sevValues, sevClrs);
+
+            // Source pie
+            const srcDist   = s.source_distribution || {};
+            const srcLabels = Object.keys(srcDist);
+            const srcValues = Object.values(srcDist);
+            const srcColors = ['#60a5fa','#fbbf24','#f87171','#34d399','#a78bfa','#fb923c'];
+            srcChart = _buildDonut('srcChart', srcChart, srcLabels, srcValues, srcColors.slice(0, srcLabels.length));
+
+            // Timestamp
+            const now = new Date();
+            const ts = now.toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+            _setText('refreshTime', ts);
+            if (dot) { dot.style.background = '#4ade80'; }  // back to green
+        })
+        .catch(() => { if (dot) dot.style.background = '#f87171'; });
+}
+
+function _setText(id, val) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = val;
+}
+
+setInterval(refreshStats, 30000);
+
+{% if hourly %}
+_buildHourly({{ hourly | tojson }});
 {% endif %}
 
 {% if stats.severity_distribution %}
-// Severity donut chart
-const sevDist = {{ stats.severity_distribution | tojson }};
-const sevOrder   = ['critical','high','medium','low'];
-const sevColors  = ['#f87171','#fbbf24','#facc15','#4ade80'];
-const sevLabels  = sevOrder.filter(s => sevDist[s] !== undefined);
-const sevValues  = sevLabels.map(s => sevDist[s]);
-const sevClrs    = sevLabels.map(s => sevColors[sevOrder.indexOf(s)]);
-
-new Chart(document.getElementById('sevChart'), {
-    type: 'doughnut',
-    data: {
-        labels: sevLabels.map(s => s.toUpperCase()),
-        datasets: [{ data: sevValues, backgroundColor: sevClrs, borderColor: '#1a2535', borderWidth: 2 }]
-    },
-    options: {
-        responsive: true,
-        cutout: '62%',
-        plugins: {
-            legend: {
-                position: 'bottom',
-                labels: { color: '#94a3b8', font: { size: 10 }, padding: 8 }
-            }
-        }
-    }
-});
+const _sevDist   = {{ stats.severity_distribution | tojson }};
+const _sevOrder  = ['critical','high','medium','low'];
+const _sevColors = ['#f87171','#fbbf24','#facc15','#4ade80'];
+const _sevLabels = _sevOrder.filter(s => _sevDist[s] !== undefined);
+sevChart = _buildDonut('sevChart', null,
+    _sevLabels.map(s => s.toUpperCase()),
+    _sevLabels.map(s => _sevDist[s]),
+    _sevLabels.map(s => _sevColors[_sevOrder.indexOf(s)]));
 {% endif %}
 
 {% if stats.source_distribution %}
-// Source pie chart
-const srcDist = {{ stats.source_distribution | tojson }};
-const srcLabels = Object.keys(srcDist);
-const srcValues = Object.values(srcDist);
-const srcColors = ['#60a5fa','#fbbf24','#f87171','#34d399','#a78bfa','#fb923c'];
-
-new Chart(document.getElementById('srcChart'), {
-    type: 'doughnut',
-    data: {
-        labels: srcLabels,
-        datasets: [{ data: srcValues, backgroundColor: srcColors.slice(0, srcLabels.length), borderColor: '#1a2535', borderWidth: 2 }]
-    },
-    options: {
-        responsive: true,
-        cutout: '62%',
-        plugins: {
-            legend: {
-                position: 'bottom',
-                labels: { color: '#94a3b8', font: { size: 10 }, padding: 8 }
-            }
-        }
-    }
-});
+const _srcDist   = {{ stats.source_distribution | tojson }};
+const _srcLabels = Object.keys(_srcDist);
+const _srcColors = ['#60a5fa','#fbbf24','#f87171','#34d399','#a78bfa','#fb923c'];
+srcChart = _buildDonut('srcChart', null,
+    _srcLabels, Object.values(_srcDist),
+    _srcColors.slice(0, _srcLabels.length));
 {% endif %}
 </script>
 {% endblock %}

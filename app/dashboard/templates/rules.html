@@ -2,11 +2,17 @@
 {% block title %}Alert Rules — Mini SIEM{% endblock %}
 
 {% block content %}
-<div class="row mb-4">
-    <div class="col">
-        <h4 class="text-light">Alert Rules</h4>
+<div class="d-flex align-items-start justify-content-between mb-4 flex-wrap gap-2">
+    <div>
+        <h4 class="text-light mb-0">Alert Rules</h4>
         <p class="text-secondary mb-0">Detection rules evaluated against incoming events</p>
     </div>
+    {% if current_user.is_admin %}
+    <button class="btn btn-sm btn-outline-success" data-bs-toggle="modal" data-bs-target="#ruleModal"
+            onclick="openCreateModal()">
+        + New Rule
+    </button>
+    {% endif %}
 </div>
 
 <div class="card p-3">
@@ -20,14 +26,15 @@
                     <th>Severity</th>
                     <th>Event Type</th>
                     <th>Mode</th>
+                    <th>MITRE</th>
                     <th>Condition</th>
                     <th>Status</th>
-                    <th>Action</th>
+                    <th>Actions</th>
                 </tr>
             </thead>
             <tbody>
                 {% for rule in rules %}
-                {% set cond = rule.condition_json | tojson if rule.condition_json is mapping else rule.condition_json %}
+                {% set condition = rule.condition_json %}
                 <tr>
                     <td>{{ rule.id }}</td>
                     <td>
@@ -39,7 +46,6 @@
                     <td><span class="badge badge-{{ rule.severity }}">{{ rule.severity | upper }}</span></td>
                     <td><code>{{ rule.event_type }}</code></td>
                     <td>
-                        {% set condition = rule.condition_json %}
                         {% if '"correlation"' in condition %}
                         <span class="badge bg-danger">Correlation</span>
                         {% elif '"threshold"' in condition %}
@@ -48,7 +54,19 @@
                         <span class="badge bg-primary">Single</span>
                         {% endif %}
                     </td>
-                    <td class="msg-cell"><code class="text-secondary" style="font-size:0.75rem">{{ rule.condition_json }}</code></td>
+                    <td>
+                        {% if rule.mitre_technique %}
+                        {% set tid = rule.mitre_technique.split('.')[0] %}
+                        <a href="https://attack.mitre.org/techniques/{{ tid }}/"
+                           target="_blank" rel="noopener"
+                           style="color:var(--siem-accent);font-size:0.82rem;white-space:nowrap">
+                            {{ rule.mitre_technique }}
+                        </a>
+                        {% else %}
+                        <span class="text-muted">—</span>
+                        {% endif %}
+                    </td>
+                    <td class="msg-cell"><code class="text-secondary" style="font-size:0.75rem">{{ condition }}</code></td>
                     <td>
                         {% if rule.enabled %}
                         <span class="badge bg-success">Enabled</span>
@@ -56,10 +74,25 @@
                         <span class="badge bg-secondary">Disabled</span>
                         {% endif %}
                     </td>
-                    <td>
+                    <td class="text-nowrap">
                         {% if current_user.is_admin %}
-                        <button class="btn btn-sm btn-outline-warning toggle-btn" data-id="{{ rule.id }}">
+                        <button class="btn btn-sm btn-outline-warning toggle-btn me-1" data-id="{{ rule.id }}">
                             {{ 'Disable' if rule.enabled else 'Enable' }}
+                        </button>
+                        <button class="btn btn-sm btn-outline-info edit-btn me-1"
+                                data-id="{{ rule.id }}"
+                                data-name="{{ rule.name }}"
+                                data-description="{{ rule.description or '' }}"
+                                data-severity="{{ rule.severity }}"
+                                data-event-type="{{ rule.event_type }}"
+                                data-mitre="{{ rule.mitre_technique or '' }}"
+                                data-condition="{{ condition }}"
+                                data-bs-toggle="modal" data-bs-target="#ruleModal">
+                            Edit
+                        </button>
+                        <button class="btn btn-sm btn-outline-danger delete-btn"
+                                data-id="{{ rule.id }}" data-name="{{ rule.name }}">
+                            Del
                         </button>
                         {% else %}
                         <span class="text-muted small">—</span>
@@ -74,10 +107,119 @@
     <p class="text-secondary mb-0">No alert rules configured.</p>
     {% endif %}
 </div>
+
+{% if current_user.is_admin %}
+<!-- Rule Create/Edit Modal -->
+<div class="modal fade" id="ruleModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content" style="background:var(--siem-card);border-color:var(--siem-border)">
+            <div class="modal-header" style="border-color:var(--siem-border)">
+                <h5 class="modal-title" id="ruleModalTitle">New Rule</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="editRuleId" value="">
+                <div class="row g-3">
+                    <div class="col-md-8">
+                        <label class="form-label text-muted" style="font-size:0.78rem;text-transform:uppercase">Rule Name *</label>
+                        <input type="text" id="rName" class="form-control" placeholder="e.g. Multiple Failed SSH Logins">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label text-muted" style="font-size:0.78rem;text-transform:uppercase">Severity *</label>
+                        <select id="rSeverity" class="form-select">
+                            <option value="low">Low</option>
+                            <option value="medium">Medium</option>
+                            <option value="high" selected>High</option>
+                            <option value="critical">Critical</option>
+                        </select>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label text-muted" style="font-size:0.78rem;text-transform:uppercase">Event Type *</label>
+                        <input type="text" id="rEventType" class="form-control" placeholder="e.g. login_failure, process_created">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label text-muted" style="font-size:0.78rem;text-transform:uppercase">Mode *</label>
+                        <select id="rMode" class="form-select" onchange="updateModeFields()">
+                            <option value="single">Single</option>
+                            <option value="threshold">Threshold</option>
+                            <option value="correlation">Correlation</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label text-muted" style="font-size:0.78rem;text-transform:uppercase">MITRE Technique</label>
+                        <input type="text" id="rMitre" class="form-control" placeholder="e.g. T1110">
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label text-muted" style="font-size:0.78rem;text-transform:uppercase">Description</label>
+                        <input type="text" id="rDescription" class="form-control" placeholder="Brief human-readable description">
+                    </div>
+
+                    <!-- Threshold fields -->
+                    <div id="thresholdFields" class="col-12" style="display:none">
+                        <div class="row g-2">
+                            <div class="col-md-3">
+                                <label class="form-label text-muted" style="font-size:0.75rem;text-transform:uppercase">Threshold (count) *</label>
+                                <input type="number" id="rThreshold" class="form-control" value="5" min="1">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label text-muted" style="font-size:0.75rem;text-transform:uppercase">Window (seconds) *</label>
+                                <input type="number" id="rWindow" class="form-control" value="300" min="1">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label text-muted" style="font-size:0.75rem;text-transform:uppercase">Group By field</label>
+                                <input type="text" id="rGroupBy" class="form-control" placeholder="e.g. user, host">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label text-muted" style="font-size:0.75rem;text-transform:uppercase">Source filter</label>
+                                <input type="text" id="rSourceFilter" class="form-control" placeholder="e.g. linux">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Correlation fields -->
+                    <div id="correlationFields" class="col-12" style="display:none">
+                        <div class="row g-2">
+                            <div class="col-md-3">
+                                <label class="form-label text-muted" style="font-size:0.75rem;text-transform:uppercase">Failure threshold *</label>
+                                <input type="number" id="rFailThreshold" class="form-control" value="3" min="1">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label text-muted" style="font-size:0.75rem;text-transform:uppercase">Window (seconds) *</label>
+                                <input type="number" id="rCorrWindow" class="form-control" value="600" min="1">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label text-muted" style="font-size:0.75rem;text-transform:uppercase">Group By field</label>
+                                <input type="text" id="rCorrGroupBy" class="form-control" placeholder="e.g. user">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label text-muted" style="font-size:0.75rem;text-transform:uppercase">Follow-up event type *</label>
+                                <input type="text" id="rFollowUp" class="form-control" placeholder="e.g. login_success">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Live JSON preview -->
+                    <div class="col-12">
+                        <label class="form-label text-muted" style="font-size:0.78rem;text-transform:uppercase">Condition JSON Preview</label>
+                        <pre id="condPreview" class="p-2 rounded mb-0"
+                             style="background:var(--siem-card2);color:var(--siem-accent);font-size:0.78rem;max-height:100px;overflow:auto"></pre>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer" style="border-color:var(--siem-border)">
+                <div id="ruleModalError" class="text-danger me-auto small" style="display:none"></div>
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-outline-success" id="saveRuleBtn">Save Rule</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
 {% endblock %}
 
 {% block extra_js %}
 <script>
+// ── Toggle enable/disable ──────────────────────────────────────────────
 document.querySelectorAll('.toggle-btn').forEach(btn => {
     btn.addEventListener('click', function() {
         const id = this.dataset.id;
@@ -88,5 +230,162 @@ document.querySelectorAll('.toggle-btn').forEach(btn => {
             .catch(() => { this.textContent = 'Error'; this.disabled = false; });
     });
 });
+
+// ── Delete ─────────────────────────────────────────────────────────────
+document.querySelectorAll('.delete-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+        const id   = this.dataset.id;
+        const name = this.dataset.name;
+        if (!confirm(`Delete rule "${name}"?\nCannot delete if it has fired alerts.`)) return;
+        this.disabled = true;
+        fetch('/api/rules/' + id, { method: 'DELETE' })
+            .then(r => r.json())
+            .then(data => {
+                if (data.ok) { location.reload(); }
+                else { alert(data.error || 'Delete failed'); this.disabled = false; }
+            })
+            .catch(() => { alert('Error'); this.disabled = false; });
+    });
+});
+
+// ── Rule editor modal ──────────────────────────────────────────────────
+function updateModeFields() {
+    const mode = document.getElementById('rMode').value;
+    document.getElementById('thresholdFields').style.display  = mode === 'threshold'   ? '' : 'none';
+    document.getElementById('correlationFields').style.display = mode === 'correlation' ? '' : 'none';
+    updatePreview();
+}
+
+function updatePreview() {
+    const mode = document.getElementById('rMode').value;
+    let cond = { mode };
+    if (mode === 'threshold') {
+        const t  = parseInt(document.getElementById('rThreshold').value) || 5;
+        const w  = parseInt(document.getElementById('rWindow').value)    || 300;
+        const gb = document.getElementById('rGroupBy').value.trim();
+        const sf = document.getElementById('rSourceFilter').value.trim();
+        cond.threshold      = t;
+        cond.window_seconds = w;
+        if (gb) cond.group_by = gb;
+        cond.field_filters  = sf ? {source: sf} : {};
+    } else if (mode === 'correlation') {
+        const ft = parseInt(document.getElementById('rFailThreshold').value) || 3;
+        const w  = parseInt(document.getElementById('rCorrWindow').value)    || 600;
+        const gb = document.getElementById('rCorrGroupBy').value.trim();
+        const fu = document.getElementById('rFollowUp').value.trim();
+        cond.failure_threshold = ft;
+        cond.window_seconds    = w;
+        if (gb) cond.group_by = gb;
+        if (fu) cond.follow_up_event = fu;
+    } else {
+        cond.field_filters = {};
+    }
+    document.getElementById('condPreview').textContent = JSON.stringify(cond, null, 2);
+    return cond;
+}
+
+// Live preview on any input change
+['rMode','rThreshold','rWindow','rGroupBy','rSourceFilter',
+ 'rFailThreshold','rCorrWindow','rCorrGroupBy','rFollowUp'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('input', updatePreview);
+});
+
+function openCreateModal() {
+    document.getElementById('ruleModalTitle').textContent = 'New Rule';
+    document.getElementById('editRuleId').value = '';
+    document.getElementById('rName').value        = '';
+    document.getElementById('rDescription').value = '';
+    document.getElementById('rSeverity').value    = 'high';
+    document.getElementById('rEventType').value   = '';
+    document.getElementById('rMitre').value       = '';
+    document.getElementById('rMode').value        = 'single';
+    document.getElementById('ruleModalError').style.display = 'none';
+    updateModeFields();
+}
+
+// Pre-fill modal for editing
+document.querySelectorAll('.edit-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+        document.getElementById('ruleModalTitle').textContent = 'Edit Rule';
+        document.getElementById('editRuleId').value     = this.dataset.id;
+        document.getElementById('rName').value          = this.dataset.name;
+        document.getElementById('rDescription').value   = this.dataset.description;
+        document.getElementById('rSeverity').value      = this.dataset.severity;
+        document.getElementById('rEventType').value     = this.dataset.eventType;
+        document.getElementById('rMitre').value         = this.dataset.mitre;
+        document.getElementById('ruleModalError').style.display = 'none';
+
+        try {
+            const cond = JSON.parse(this.dataset.condition);
+            const mode = cond.mode || 'single';
+            document.getElementById('rMode').value = mode;
+            if (mode === 'threshold') {
+                document.getElementById('rThreshold').value    = cond.threshold      || 5;
+                document.getElementById('rWindow').value       = cond.window_seconds || 300;
+                document.getElementById('rGroupBy').value      = cond.group_by       || '';
+                document.getElementById('rSourceFilter').value = (cond.field_filters || {}).source || '';
+            } else if (mode === 'correlation') {
+                document.getElementById('rFailThreshold').value = cond.failure_threshold || 3;
+                document.getElementById('rCorrWindow').value    = cond.window_seconds    || 600;
+                document.getElementById('rCorrGroupBy').value   = cond.group_by          || '';
+                document.getElementById('rFollowUp').value      = cond.follow_up_event   || '';
+            }
+        } catch(_) {}
+        updateModeFields();
+    });
+});
+
+// Save (create or update)
+document.getElementById('saveRuleBtn').addEventListener('click', function() {
+    const editId = document.getElementById('editRuleId').value;
+    const errEl  = document.getElementById('ruleModalError');
+    errEl.style.display = 'none';
+
+    const condition = updatePreview();
+    const payload = {
+        name:            document.getElementById('rName').value.trim(),
+        description:     document.getElementById('rDescription').value.trim(),
+        severity:        document.getElementById('rSeverity').value,
+        event_type:      document.getElementById('rEventType').value.trim(),
+        mitre_technique: document.getElementById('rMitre').value.trim(),
+        condition,
+    };
+
+    if (!payload.name)       { errEl.textContent = 'Name is required'; errEl.style.display = ''; return; }
+    if (!payload.event_type) { errEl.textContent = 'Event type is required'; errEl.style.display = ''; return; }
+
+    const url    = editId ? '/api/rules/' + editId : '/api/rules';
+    const method = editId ? 'PUT' : 'POST';
+
+    this.disabled = true;
+    this.textContent = 'Saving...';
+
+    fetch(url, {
+        method,
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(payload),
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.ok) {
+            location.reload();
+        } else {
+            errEl.textContent = data.error || 'Save failed';
+            errEl.style.display = '';
+            this.disabled = false;
+            this.textContent = 'Save Rule';
+        }
+    })
+    .catch(() => {
+        errEl.textContent = 'Network error';
+        errEl.style.display = '';
+        this.disabled = false;
+        this.textContent = 'Save Rule';
+    });
+});
+
+// Init preview on page load
+updateModeFields();
 </script>
 {% endblock %}

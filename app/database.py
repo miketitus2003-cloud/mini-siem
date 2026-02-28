@@ -26,7 +26,7 @@ DB_PATH = os.path.join(DB_DIR, "siem.db")
 
 _local = threading.local()
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # ──────────────────────────────────────────────
 # Schema DDL
@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS alert_rules (
     event_type      TEXT    NOT NULL,
     condition_json  TEXT    NOT NULL,
     enabled         INTEGER NOT NULL DEFAULT 1,
+    mitre_technique TEXT    DEFAULT '',
     created_at      TEXT    NOT NULL
 );
 
@@ -248,6 +249,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
         """)
         conn.commit()
 
+    # v4 → v5: mitre_technique column on alert_rules
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(alert_rules)").fetchall()}
+    if "mitre_technique" not in cols:
+        conn.execute("ALTER TABLE alert_rules ADD COLUMN mitre_technique TEXT DEFAULT ''")
+        conn.commit()
+
     # Widen the users role CHECK constraint (SQLite can't ALTER CHECK, recreate if needed)
     # We just ensure viewer is allowed by not enforcing via the app layer for older DBs.
     # New DBs get the full CHECK from _SCHEMA_SQL above.
@@ -384,8 +391,9 @@ def get_events_in_window(
 def insert_alert_rule(rule: Dict[str, Any], db_path: Optional[str] = None) -> int:
     with transaction(db_path) as conn:
         cur = conn.execute(
-            "INSERT INTO alert_rules (name, description, severity, event_type, condition_json, enabled, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO alert_rules "
+            "(name, description, severity, event_type, condition_json, enabled, mitre_technique, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 rule["name"],
                 rule.get("description", ""),
@@ -393,6 +401,7 @@ def insert_alert_rule(rule: Dict[str, Any], db_path: Optional[str] = None) -> in
                 rule["event_type"],
                 rule["condition_json"],
                 rule.get("enabled", 1),
+                rule.get("mitre_technique", ""),
                 _utcnow(),
             ),
         )
@@ -409,7 +418,7 @@ def get_alert_rules(enabled_only: bool = True, db_path: Optional[str] = None) ->
 
 
 def update_alert_rule(rule_id: int, updates: Dict[str, Any], db_path: Optional[str] = None):
-    allowed = {"name", "description", "severity", "event_type", "condition_json", "enabled"}
+    allowed = {"name", "description", "severity", "event_type", "condition_json", "enabled", "mitre_technique"}
     sets = []
     params = []
     for k, v in updates.items():
@@ -464,6 +473,47 @@ def get_alerts(
             "SELECT * FROM alerts ORDER BY fired_at DESC LIMIT ? OFFSET ?",
             (limit, offset),
         ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_alert_rule(rule_id: int, db_path: Optional[str] = None) -> bool:
+    """Delete a custom rule. Returns False if the rule has associated alerts."""
+    conn = get_connection(db_path)
+    count = conn.execute(
+        "SELECT COUNT(*) FROM alerts WHERE rule_id = ?", (rule_id,)
+    ).fetchone()[0]
+    if count > 0:
+        return False
+    with transaction(db_path) as conn:
+        conn.execute("DELETE FROM alert_rules WHERE id = ?", (rule_id,))
+    return True
+
+
+def get_events_for_incident(incident_id: int, db_path: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Return all normalized events linked to an incident via its alerts."""
+    conn = get_connection(db_path)
+    alert_rows = conn.execute(
+        "SELECT a.event_ids_json FROM alerts a "
+        "JOIN incident_alerts ia ON ia.alert_id = a.id "
+        "WHERE ia.incident_id = ?",
+        (incident_id,),
+    ).fetchall()
+    event_ids: List[int] = []
+    for row in alert_rows:
+        try:
+            ids = json.loads(row[0])
+            if isinstance(ids, list):
+                event_ids.extend(int(i) for i in ids if isinstance(i, (int, str)))
+        except (ValueError, TypeError):
+            pass
+    if not event_ids:
+        return []
+    placeholders = ",".join("?" * len(event_ids))
+    rows = conn.execute(
+        f"SELECT id, timestamp, source, event_type, severity, host, user, process, message "
+        f"FROM normalized_events WHERE id IN ({placeholders}) ORDER BY timestamp ASC",
+        event_ids,
+    ).fetchall()
     return [dict(r) for r in rows]
 
 
