@@ -33,7 +33,7 @@
 <div class="card p-3 mb-3">
     <h6 class="text-muted mb-2" style="font-size:0.78rem;text-transform:uppercase;letter-spacing:0.5px">Tracked Actions</h6>
     <div class="d-flex gap-2 flex-wrap">
-        {% for action in ['login', 'login_failed', 'logout', 'ingest', 'ingest_sample', 'alert_ack', 'alert_note', 'detect_cycle', 'rule_toggle', 'incident_create', 'incident_update', 'incident_link_alert', 'user_create', 'user_role_change', 'user_delete'] %}
+        {% for action in ['login', 'login_failed', 'login_rate_limited', 'logout', 'ingest', 'ingest_sample', 'alert_ack', 'alert_note', 'detect_cycle', 'rule_toggle', 'incident_create', 'incident_update', 'incident_link_alert', 'user_create', 'user_role_change', 'user_delete', 'export_alerts_csv', 'export_events_csv'] %}
         <span class="badge bg-secondary" style="font-size:0.72rem;cursor:pointer"
               onclick="document.querySelector('[name=action]').value='{{ action }}'">{{ action }}</span>
         {% endfor %}
@@ -70,9 +70,12 @@
                     'rule_toggle':        '#fb923c',
                     'incident_create':    '#f472b6',
                     'incident_update':    '#f472b6',
-                    'user_create':        '#f87171',
-                    'user_role_change':   '#f87171',
-                    'user_delete':        '#f87171'
+                    'user_create':           '#f87171',
+                    'user_role_change':      '#f87171',
+                    'user_delete':           '#f87171',
+                    'login_rate_limited':    '#fb923c',
+                    'export_alerts_csv':     '#67e8f9',
+                    'export_events_csv':     '#67e8f9'
                 } %}
                 <tr>
                     <td>{{ e.id }}</td>

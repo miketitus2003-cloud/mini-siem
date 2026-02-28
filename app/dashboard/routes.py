@@ -4,16 +4,21 @@ mini-siem.app.dashboard.routes
 Flask blueprint — UI and JSON API.
 """
 
+import csv
+import io
 import json
 import logging
+import time
 from datetime import datetime, timezone, timedelta
 
 from flask import (
     Blueprint,
+    Response,
     jsonify,
     redirect,
     render_template,
     request,
+    stream_with_context,
     url_for,
     flash,
 )
@@ -29,8 +34,10 @@ from app.database import (
     events_per_hour_last_24h,
     get_alert_rules,
     get_alerts,
+    get_all_alerts_for_export,
     get_all_users,
     get_audit_log,
+    get_events_since_id,
     get_incident,
     get_incident_alerts,
     get_incidents,
@@ -47,6 +54,7 @@ from app.database import (
     write_audit,
 )
 from app.alerts.engine import evaluate_all, run_detection_cycle
+from app.rate_limit import is_rate_limited, record_failure, clear_failures
 from app.logs.windows import ingest_evtx_xml, load_sample_data as win_samples
 from app.logs.linux import ingest_syslog_lines, load_sample_data as linux_samples
 from app.logs.azure import ingest_azure_logs, load_sample_data as azure_samples
@@ -108,6 +116,21 @@ def login():
         return redirect(url_for("dashboard.index"))
 
     if request.method == "POST":
+        ip = _client_ip()
+
+        if is_rate_limited(ip):
+            write_audit(
+                username=request.form.get("username", "unknown").strip(),
+                action="login_rate_limited",
+                detail="IP blocked after repeated failures",
+                ip_address=ip,
+            )
+            flash(
+                "Too many failed login attempts. Please wait 15 minutes before trying again.",
+                "danger",
+            )
+            return render_template("login.html")
+
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
         row = get_user_by_username(username)
@@ -115,15 +138,17 @@ def login():
             from app import SIEMUser
             user = SIEMUser(row)
             login_user(user)
+            clear_failures(ip)
             write_audit(username=username, action="login",
-                        detail="successful login", ip_address=_client_ip())
+                        detail="successful login", ip_address=ip)
             next_page = request.args.get("next") or url_for("dashboard.index")
             if next_page.startswith("/"):
                 return redirect(next_page)
             return redirect(url_for("dashboard.index"))
+        record_failure(ip)
         write_audit(
             username=username or "unknown", action="login_failed",
-            detail="invalid credentials", ip_address=_client_ip(),
+            detail="invalid credentials", ip_address=ip,
         )
         flash("Invalid username or password.", "danger")
 
@@ -676,4 +701,137 @@ def audit_page():
         per_page=per_page,
         username_filter=username_filter,
         action_filter=action_filter,
+    )
+
+
+# ──────────────────────────────────────────────
+# CSV Export
+# ──────────────────────────────────────────────
+
+@bp.route("/api/alerts/export.csv")
+@login_required
+def api_export_alerts_csv():
+    show = request.args.get("show", "all")
+    if show == "open":
+        ack_filter = False
+    elif show == "ack":
+        ack_filter = True
+    else:
+        ack_filter = None
+
+    alerts = get_all_alerts_for_export(acknowledged=ack_filter)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["id", "rule_id", "severity", "message", "fired_at",
+                     "acknowledged", "notes", "event_ids"])
+    for a in alerts:
+        writer.writerow([
+            a["id"], a["rule_id"], a["severity"], a["message"], a["fired_at"],
+            "yes" if a["acknowledged"] else "no",
+            a.get("notes", ""), a["event_ids_json"],
+        ])
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    _audit("export_alerts_csv", detail=f"show={show} rows={len(alerts)}")
+    return Response(
+        output.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=alerts_{ts}.csv"},
+    )
+
+
+@bp.route("/api/events/export.csv")
+@login_required
+def api_export_events_csv():
+    source     = request.args.get("source", "")
+    severity   = request.args.get("severity", "")
+    event_type = request.args.get("event_type", "")
+    time_range = request.args.get("time_range", "")
+
+    filters = {}
+    if source:
+        filters["source"] = source
+    if severity:
+        filters["severity"] = severity
+    if event_type:
+        filters["event_type"] = event_type
+
+    events = query_events_with_time_range(
+        filters=filters,
+        time_range=time_range or None,
+        limit=10000,
+        offset=0,
+    )
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["id", "timestamp", "source", "event_type", "severity",
+                     "host", "user", "process", "message", "raw_log_id"])
+    for ev in events:
+        writer.writerow([
+            ev["id"], ev["timestamp"], ev["source"], ev["event_type"],
+            ev["severity"], ev.get("host", ""), ev.get("user", ""),
+            ev.get("process", ""), ev["message"], ev.get("raw_log_id", ""),
+        ])
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    _audit("export_events_csv",
+           detail=f"source={source} severity={severity} time_range={time_range} rows={len(events)}")
+    return Response(
+        output.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=events_{ts}.csv"},
+    )
+
+
+# ──────────────────────────────────────────────
+# Live Event Feed (SSE)
+# ──────────────────────────────────────────────
+
+@bp.route("/live")
+@login_required
+def live_feed_page():
+    return render_template("live.html")
+
+
+@bp.route("/api/events/stream")
+@login_required
+def api_events_stream():
+    """Server-Sent Events stream of new normalized_events."""
+    POLL_INTERVAL = 2
+    MAX_IDLE_POLLS = 150  # 150 * 2s = 5 minutes
+
+    def generate():
+        from app.database import get_connection as _gc
+        conn = _gc()
+        row = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) FROM normalized_events"
+        ).fetchone()
+        last_id = row[0] if row else 0
+        idle_count = 0
+
+        while True:
+            time.sleep(POLL_INTERVAL)
+            events = get_events_since_id(last_id, limit=50)
+            if events:
+                idle_count = 0
+                for ev in events:
+                    last_id = ev["id"]
+                    yield f"data: {json.dumps(ev)}\n\n"
+            else:
+                idle_count += 1
+                yield ": heartbeat\n\n"
+
+            if idle_count >= MAX_IDLE_POLLS:
+                yield "event: timeout\ndata: {}\n\n"
+                return
+
+    return Response(
+        stream_with_context(generate()),
+        content_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
     )

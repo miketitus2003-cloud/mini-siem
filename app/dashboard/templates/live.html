@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+{% block title %}Live Feed — Mini SIEM{% endblock %}
+
+{% block extra_head %}
+<style>
+    .live-dot {
+        display: inline-block;
+        width: 8px; height: 8px;
+        border-radius: 50%;
+        background: #4ade80;
+        animation: pulse 1.5s infinite;
+        margin-right: 5px;
+        vertical-align: middle;
+    }
+    @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50%       { opacity: 0.25; }
+    }
+    #feed-table tbody tr {
+        animation: fadeIn 0.25s ease;
+    }
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(-4px); }
+        to   { opacity: 1; transform: translateY(0); }
+    }
+    #feed-table { font-size: 0.88rem; }
+    #feed-scroll { max-height: 74vh; overflow-y: auto; }
+    #feed-table thead th { position: sticky; top: 0; z-index: 1; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4 flex-wrap gap-2">
+    <div>
+        <h4 class="mb-0">Live Event Feed</h4>
+        <p class="text-muted small mb-0">Real-time stream of incoming security events — updates every 2 seconds</p>
+    </div>
+    <div class="d-flex align-items-center gap-3">
+        <span id="feed-status" class="text-muted small">
+            <span class="live-dot" id="status-dot"></span><span id="status-text">Connecting...</span>
+        </span>
+        <span class="badge bg-secondary" id="event-count" style="font-size:0.78rem">0 events</span>
+        <button id="pause-btn" class="btn btn-sm btn-outline-warning">Pause</button>
+        <button id="clear-btn" class="btn btn-sm btn-outline-secondary">Clear</button>
+    </div>
+</div>
+
+<div class="card p-0">
+    <div class="table-responsive" id="feed-scroll">
+        <table class="table table-sm table-hover mb-0" id="feed-table">
+            <thead>
+                <tr>
+                    <th style="min-width:130px">Time</th>
+                    <th>Source</th>
+                    <th>Type</th>
+                    <th>Severity</th>
+                    <th>Host</th>
+                    <th>User</th>
+                    <th>Message</th>
+                </tr>
+            </thead>
+            <tbody id="feed-body">
+                <tr id="empty-row">
+                    <td colspan="7" class="text-muted text-center py-5">
+                        Waiting for new events&hellip;
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const MAX_ROWS    = 200;
+const SEV_CLASSES = {
+    critical: 'badge-critical',
+    high:     'badge-high',
+    medium:   'badge-medium',
+    low:      'badge-low',
+};
+
+let paused       = false;
+let eventCount   = 0;
+let eventSource  = null;
+
+const tbody      = document.getElementById('feed-body');
+const statusDot  = document.getElementById('status-dot');
+const statusText = document.getElementById('status-text');
+const countBadge = document.getElementById('event-count');
+const pauseBtn   = document.getElementById('pause-btn');
+const clearBtn   = document.getElementById('clear-btn');
+
+function setStatus(text, color) {
+    statusDot.style.background  = color || '#4ade80';
+    statusDot.style.animation   = color === '#f87171' ? 'none' : 'pulse 1.5s infinite';
+    statusText.textContent       = text;
+}
+
+function appendRow(ev) {
+    const emptyRow = document.getElementById('empty-row');
+    if (emptyRow) emptyRow.remove();
+
+    eventCount++;
+    countBadge.textContent = `${eventCount} event${eventCount !== 1 ? 's' : ''}`;
+
+    const tr  = document.createElement('tr');
+    const sev = (ev.severity || '').toLowerCase();
+    const cls = SEV_CLASSES[sev] || 'bg-secondary';
+    const ts  = (ev.timestamp || '').substring(0, 19).replace('T', ' ');
+    const msg = (ev.message || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    tr.innerHTML = `
+        <td class="text-nowrap text-muted" style="font-size:0.78rem">${ts}</td>
+        <td><span class="badge bg-secondary">${ev.source || ''}</span></td>
+        <td style="font-size:0.82rem">${ev.event_type || ''}</td>
+        <td><span class="badge ${cls}">${sev.toUpperCase()}</span></td>
+        <td>${ev.host || '&mdash;'}</td>
+        <td>${ev.user || '&mdash;'}</td>
+        <td class="msg-cell" title="${(ev.message || '').replace(/"/g, '&quot;')}">${msg}</td>
+    `;
+
+    tbody.insertBefore(tr, tbody.firstChild);
+
+    while (tbody.children.length > MAX_ROWS) {
+        tbody.removeChild(tbody.lastChild);
+    }
+}
+
+function connect() {
+    eventSource = new EventSource('/api/events/stream');
+
+    eventSource.onopen = () => {
+        setStatus('Live', '#4ade80');
+    };
+
+    eventSource.onmessage = (e) => {
+        if (paused) return;
+        try {
+            appendRow(JSON.parse(e.data));
+        } catch (_) {}
+    };
+
+    eventSource.addEventListener('timeout', () => {
+        setStatus('Reconnecting\u2026', '#fbbf24');
+    });
+
+    eventSource.onerror = () => {
+        setStatus('Reconnecting\u2026', '#fbbf24');
+    };
+}
+
+pauseBtn.addEventListener('click', () => {
+    paused = !paused;
+    if (paused) {
+        pauseBtn.textContent  = 'Resume';
+        pauseBtn.className    = 'btn btn-sm btn-outline-success';
+        setStatus('Paused', '#94a3b8');
+    } else {
+        pauseBtn.textContent  = 'Pause';
+        pauseBtn.className    = 'btn btn-sm btn-outline-warning';
+        setStatus('Live', '#4ade80');
+    }
+});
+
+clearBtn.addEventListener('click', () => {
+    tbody.innerHTML = `<tr id="empty-row"><td colspan="7" class="text-muted text-center py-5">Waiting for new events&hellip;</td></tr>`;
+    eventCount = 0;
+    countBadge.textContent = '0 events';
+});
+
+connect();
+</script>
+{% endblock %}

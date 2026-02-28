@@ -57,6 +57,8 @@
         <div class="d-flex gap-2 align-self-end">
             <button type="submit" class="btn btn-sm btn-outline-info">Search</button>
             <a href="/events" class="btn btn-sm btn-outline-secondary">Clear</a>
+            <a href="/api/events/export.csv?source={{ source }}&severity={{ severity }}&event_type={{ event_type }}&time_range={{ time_range }}"
+               class="btn btn-sm btn-outline-secondary">&#8659; Export CSV</a>
         </div>
     </form>
     {% if search_q %}

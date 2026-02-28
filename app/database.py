@@ -467,6 +467,40 @@ def get_alerts(
     return [dict(r) for r in rows]
 
 
+def get_all_alerts_for_export(
+    acknowledged: Optional[bool] = None,
+    db_path: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Return all alerts without pagination, for CSV export."""
+    conn = get_connection(db_path)
+    if acknowledged is not None:
+        rows = conn.execute(
+            "SELECT * FROM alerts WHERE acknowledged = ? ORDER BY fired_at DESC",
+            (int(acknowledged),),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM alerts ORDER BY fired_at DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_events_since_id(
+    last_id: int,
+    limit: int = 50,
+    db_path: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Return normalized events with id > last_id, ordered ascending (for SSE feed)."""
+    conn = get_connection(db_path)
+    rows = conn.execute(
+        "SELECT id, timestamp, source, event_type, severity, host, "
+        "user, process, message "
+        "FROM normalized_events WHERE id > ? ORDER BY id ASC LIMIT ?",
+        (last_id, limit),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def acknowledge_alert(alert_id: int, db_path: Optional[str] = None):
     with transaction(db_path) as conn:
         conn.execute("UPDATE alerts SET acknowledged = 1 WHERE id = ?", (alert_id,))

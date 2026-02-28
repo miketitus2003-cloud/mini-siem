@@ -140,6 +140,7 @@
                     <li class="nav-item"><a class="nav-link {{ 'active' if request.path.startswith('/incidents') }}" href="/incidents">Incidents</a></li>
                     <li class="nav-item"><a class="nav-link {{ 'active' if request.path.startswith('/rules') }}" href="/rules">Rules</a></li>
                     <li class="nav-item"><a class="nav-link {{ 'active' if request.path.startswith('/sources') }}" href="/sources">Sources</a></li>
+                    <li class="nav-item"><a class="nav-link {{ 'active' if request.path.startswith('/live') }}" href="/live">Live Feed</a></li>
                     {% if current_user.is_authenticated and current_user.is_admin %}
                     <li class="nav-item"><a class="nav-link {{ 'active' if request.path.startswith('/ingest') }}" href="/ingest">Ingest</a></li>
                     <li class="nav-item"><a class="nav-link {{ 'active' if request.path.startswith('/users') }}" href="/users">Users</a></li>
