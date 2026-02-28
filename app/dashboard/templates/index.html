@@ -2,12 +2,13 @@
 {% block title %}Dashboard — Mini SIEM{% endblock %}
 
 {% block content %}
-<div class="row mb-4">
-    <div class="col">
-        <h4 class="text-light">Dashboard Overview</h4>
-        <p class="text-secondary mb-0">Real-time security posture summary</p>
+<div class="d-flex align-items-start justify-content-between mb-4 flex-wrap gap-2">
+    <div>
+        <h4 class="mb-0">Dashboard Overview</h4>
+        <p class="text-muted small mb-0">Real-time security posture summary</p>
     </div>
-    <div class="col-auto">
+    <div class="d-flex align-items-center gap-3">
+        <span class="text-muted small" id="refreshLabel">Last refreshed: {{ last_refreshed }}</span>
         <form method="POST" action="/api/detect" id="detectForm">
             <button type="submit" class="btn btn-outline-info btn-sm" id="detectBtn">Run Detection Cycle</button>
         </form>
@@ -18,72 +19,109 @@
 <div class="row g-3 mb-4">
     <div class="col-md-3">
         <div class="card stat-card p-3">
-            <div class="text-secondary small">Total Events</div>
-            <div class="stat-number text-info">{{ stats.total_events }}</div>
+            <div class="stat-label">Total Events</div>
+            <div class="stat-number" style="color:var(--siem-accent)">{{ stats.total_events }}</div>
         </div>
     </div>
     <div class="col-md-3">
         <div class="card stat-card p-3">
-            <div class="text-secondary small">Total Alerts</div>
-            <div class="stat-number text-warning">{{ stats.total_alerts }}</div>
+            <div class="stat-label">Total Alerts</div>
+            <div class="stat-number" style="color:var(--sev-high)">{{ stats.total_alerts }}</div>
         </div>
     </div>
     <div class="col-md-3">
         <div class="card stat-card p-3">
-            <div class="text-secondary small">Unacknowledged</div>
-            <div class="stat-number text-danger">{{ stats.unacknowledged_alerts }}</div>
+            <div class="stat-label">Unacknowledged</div>
+            <div class="stat-number" style="color:var(--sev-critical)">{{ stats.unacknowledged_alerts }}</div>
         </div>
     </div>
     <div class="col-md-3">
         <div class="card stat-card p-3">
-            <div class="text-secondary small">Sources Active</div>
-            <div class="stat-number text-success">{{ stats.source_distribution | length }}</div>
+            <div class="stat-label">Sources Active</div>
+            <div class="stat-number" style="color:var(--sev-low)">{{ stats.source_distribution | length }}</div>
         </div>
     </div>
 </div>
 
-<!-- Distribution cards -->
+<!-- Charts + stats row -->
 <div class="row g-3 mb-4">
+    <!-- Events per hour chart -->
     <div class="col-md-6">
-        <div class="card p-3">
-            <h6 class="text-secondary">Events by Severity</h6>
-            <div class="d-flex gap-3 flex-wrap mt-2">
-                {% for sev, cnt in stats.severity_distribution.items() %}
-                <div>
+        <div class="card p-3 h-100">
+            <h6 class="text-muted mb-3">Events — Last 24 Hours</h6>
+            {% if hourly %}
+            <canvas id="hourlyChart" height="140"></canvas>
+            {% else %}
+            <p class="text-muted small mb-0">No events in the last 24 hours. <a href="/ingest" style="color:var(--siem-accent)">Ingest some data</a> to see the chart.</p>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Severity + Source distribution -->
+    <div class="col-md-3">
+        <div class="card p-3 h-100">
+            <h6 class="text-muted mb-3">By Severity</h6>
+            <div class="d-flex flex-column gap-2">
+                {% for sev in ['critical','high','medium','low'] %}
+                {% set cnt = stats.severity_distribution.get(sev, 0) %}
+                <div class="d-flex justify-content-between align-items-center">
                     <span class="badge badge-{{ sev }}">{{ sev | upper }}</span>
-                    <span class="text-light ms-1">{{ cnt }}</span>
+                    <span class="fw-semibold">{{ cnt }}</span>
                 </div>
                 {% endfor %}
                 {% if not stats.severity_distribution %}
-                <span class="text-secondary">No events yet</span>
+                <span class="text-muted small">No events yet</span>
                 {% endif %}
             </div>
         </div>
     </div>
-    <div class="col-md-6">
-        <div class="card p-3">
-            <h6 class="text-secondary">Events by Source</h6>
-            <div class="d-flex gap-3 flex-wrap mt-2">
+
+    <div class="col-md-3">
+        <div class="card p-3 h-100">
+            <h6 class="text-muted mb-3">By Source</h6>
+            <div class="d-flex flex-column gap-2">
                 {% for src, cnt in stats.source_distribution.items() %}
-                <div>
+                <div class="d-flex justify-content-between align-items-center">
                     <span class="badge bg-secondary">{{ src }}</span>
-                    <span class="text-light ms-1">{{ cnt }}</span>
+                    <span class="fw-semibold">{{ cnt }}</span>
                 </div>
                 {% endfor %}
                 {% if not stats.source_distribution %}
-                <span class="text-secondary">No events yet</span>
+                <span class="text-muted small">No events yet</span>
                 {% endif %}
             </div>
         </div>
     </div>
 </div>
 
-<!-- Recent alerts -->
+<!-- Top IPs + quick actions -->
 <div class="row g-3 mb-4">
-    <div class="col-12">
-        <div class="card p-3">
+    <div class="col-md-4">
+        <div class="card p-3 h-100">
+            <h6 class="text-muted mb-3">Top Source IPs</h6>
+            {% if top5_ips %}
+            <table class="table table-sm mb-0">
+                <thead><tr><th>IP Address</th><th>Events</th></tr></thead>
+                <tbody>
+                    {% for item in top5_ips %}
+                    <tr>
+                        <td><code>{{ item.ip }}</code></td>
+                        <td class="fw-semibold">{{ item.count }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p class="text-muted small mb-0">No IP data available yet.</p>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Recent alerts -->
+    <div class="col-md-8">
+        <div class="card p-3 h-100">
             <div class="d-flex justify-content-between align-items-center mb-3">
-                <h6 class="text-secondary mb-0">Recent Alerts</h6>
+                <h6 class="text-muted mb-0">Recent Alerts</h6>
                 <a href="/alerts" class="btn btn-sm btn-outline-secondary">View All</a>
             </div>
             {% if stats.recent_alerts %}
@@ -91,7 +129,6 @@
                 <table class="table table-sm table-hover">
                     <thead>
                         <tr>
-                            <th>ID</th>
                             <th>Severity</th>
                             <th>Message</th>
                             <th>Fired At</th>
@@ -101,10 +138,9 @@
                     <tbody>
                         {% for alert in stats.recent_alerts %}
                         <tr>
-                            <td>{{ alert.id }}</td>
                             <td><span class="badge badge-{{ alert.severity }}">{{ alert.severity | upper }}</span></td>
                             <td class="msg-cell" title="{{ alert.message }}">{{ alert.message }}</td>
-                            <td class="text-secondary">{{ alert.fired_at }}</td>
+                            <td class="text-muted" style="font-size:0.8rem">{{ alert.fired_at }}</td>
                             <td>
                                 {% if alert.acknowledged %}
                                 <span class="badge bg-secondary">ACK</span>
@@ -118,7 +154,7 @@
                 </table>
             </div>
             {% else %}
-            <p class="text-secondary mb-0">No alerts have fired yet.</p>
+            <p class="text-muted small mb-0">No alerts yet. <a href="/ingest" style="color:var(--siem-accent)">Load sample data</a> to get started.</p>
             {% endif %}
         </div>
     </div>
@@ -129,7 +165,7 @@
     <div class="col-12">
         <div class="card p-3">
             <div class="d-flex justify-content-between align-items-center mb-3">
-                <h6 class="text-secondary mb-0">Recent Events</h6>
+                <h6 class="text-muted mb-0">Recent Events</h6>
                 <a href="/events" class="btn btn-sm btn-outline-secondary">View All</a>
             </div>
             {% if stats.recent_events %}
@@ -137,7 +173,6 @@
                 <table class="table table-sm table-hover">
                     <thead>
                         <tr>
-                            <th>ID</th>
                             <th>Source</th>
                             <th>Type</th>
                             <th>Severity</th>
@@ -150,21 +185,20 @@
                     <tbody>
                         {% for ev in stats.recent_events %}
                         <tr>
-                            <td>{{ ev.id }}</td>
                             <td><span class="badge bg-secondary">{{ ev.source }}</span></td>
                             <td>{{ ev.event_type }}</td>
                             <td><span class="badge badge-{{ ev.severity }}">{{ ev.severity }}</span></td>
-                            <td>{{ ev.host }}</td>
-                            <td>{{ ev.user }}</td>
+                            <td>{{ ev.host or '—' }}</td>
+                            <td>{{ ev.user or '—' }}</td>
                             <td class="msg-cell" title="{{ ev.message }}">{{ ev.message }}</td>
-                            <td class="text-secondary">{{ ev.timestamp }}</td>
+                            <td class="text-muted" style="font-size:0.8rem">{{ ev.timestamp }}</td>
                         </tr>
                         {% endfor %}
                     </tbody>
                 </table>
             </div>
             {% else %}
-            <p class="text-secondary mb-0">No events ingested yet.</p>
+            <p class="text-muted small mb-0">No events ingested yet. <a href="/ingest" style="color:var(--siem-accent)">Go to the Ingest page</a> to load data.</p>
             {% endif %}
         </div>
     </div>
@@ -173,6 +207,7 @@
 
 {% block extra_js %}
 <script>
+// Detection cycle button
 document.getElementById('detectForm').addEventListener('submit', function(e) {
     e.preventDefault();
     const btn = document.getElementById('detectBtn');
@@ -186,5 +221,47 @@ document.getElementById('detectForm').addEventListener('submit', function(e) {
         })
         .catch(() => { btn.textContent = 'Error'; btn.disabled = false; });
 });
+
+// Auto-refresh every 30 seconds
+setTimeout(() => location.reload(), 30000);
+
+{% if hourly %}
+// Hourly events chart
+const hourlyData = {{ hourly | tojson }};
+const labels = hourlyData.map(d => {
+    const h = new Date(d.hour + ':00Z');
+    return h.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+});
+const counts = hourlyData.map(d => d.count);
+
+new Chart(document.getElementById('hourlyChart'), {
+    type: 'bar',
+    data: {
+        labels,
+        datasets: [{
+            label: 'Events',
+            data: counts,
+            backgroundColor: 'rgba(96, 165, 250, 0.5)',
+            borderColor: 'rgba(96, 165, 250, 0.9)',
+            borderWidth: 1,
+        }]
+    },
+    options: {
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: {
+            x: {
+                ticks: { color: '#94a3b8', font: { size: 10 }, maxRotation: 45 },
+                grid: { color: '#2d3f55' }
+            },
+            y: {
+                ticks: { color: '#94a3b8', stepSize: 1 },
+                grid: { color: '#2d3f55' },
+                beginAtZero: true
+            }
+        }
+    }
+});
+{% endif %}
 </script>
 {% endblock %}

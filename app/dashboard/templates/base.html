@@ -8,47 +8,127 @@
           rel="stylesheet"
           integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YcnS/1mVECmFAhee/15LHoGSHFRvFk2p6AK"
           crossorigin="anonymous">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
     <style>
         :root {
-            --siem-bg: #0d1117;
-            --siem-card: #161b22;
-            --siem-border: #30363d;
-            --siem-accent: #58a6ff;
-            --sev-critical: #f85149;
-            --sev-high: #d29922;
-            --sev-medium: #e3b341;
-            --sev-low: #3fb950;
+            --siem-bg:      #0f1923;
+            --siem-card:    #1a2535;
+            --siem-card2:   #1f2d42;
+            --siem-border:  #2d3f55;
+            --siem-text:    #e2e8f0;
+            --siem-muted:   #94a3b8;
+            --siem-accent:  #60a5fa;
+            --sev-critical: #f87171;
+            --sev-high:     #fbbf24;
+            --sev-medium:   #facc15;
+            --sev-low:      #4ade80;
         }
         body {
             background-color: var(--siem-bg);
+            color: var(--siem-text);
             font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
         }
-        .navbar { background-color: var(--siem-card) !important; border-bottom: 1px solid var(--siem-border); }
-        .navbar-brand { font-weight: 700; letter-spacing: 1px; }
-        .card { background-color: var(--siem-card); border: 1px solid var(--siem-border); }
+        /* Navbar */
+        .navbar {
+            background-color: #111d2e !important;
+            border-bottom: 1px solid var(--siem-border);
+        }
+        .navbar-brand { font-weight: 700; letter-spacing: 1px; color: var(--siem-accent) !important; }
+        .nav-link { color: var(--siem-muted) !important; }
+        .nav-link:hover, .nav-link.active { color: var(--siem-text) !important; }
+
+        /* Cards */
+        .card {
+            background-color: var(--siem-card);
+            border: 1px solid var(--siem-border);
+            color: var(--siem-text);
+        }
+        .card-header {
+            background-color: var(--siem-card2);
+            border-bottom: 1px solid var(--siem-border);
+            color: var(--siem-text);
+            font-weight: 600;
+        }
         .stat-card { transition: transform 0.15s; }
         .stat-card:hover { transform: translateY(-2px); }
-        .stat-number { font-size: 2.25rem; font-weight: 700; }
+        .stat-number { font-size: 2.25rem; font-weight: 700; color: var(--siem-text); }
+        .stat-label { color: var(--siem-muted); font-size: 0.85rem; }
 
-        .badge-critical { background-color: var(--sev-critical); }
+        /* Severity badges */
+        .badge-critical { background-color: var(--sev-critical); color: #000; }
         .badge-high     { background-color: var(--sev-high); color: #000; }
         .badge-medium   { background-color: var(--sev-medium); color: #000; }
         .badge-low      { background-color: var(--sev-low); color: #000; }
 
-        .table { --bs-table-bg: transparent; }
-        .table thead th { border-color: var(--siem-border); color: #8b949e; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px; }
-        .table td { border-color: var(--siem-border); vertical-align: middle; font-size: 0.9rem; }
+        /* Tables */
+        .table {
+            --bs-table-bg: transparent;
+            color: var(--siem-text);
+        }
+        .table thead th {
+            border-color: var(--siem-border);
+            color: var(--siem-muted);
+            font-size: 0.78rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            background-color: var(--siem-card2);
+        }
+        .table td {
+            border-color: var(--siem-border);
+            vertical-align: middle;
+            font-size: 0.9rem;
+            color: var(--siem-text);
+        }
+        .table-hover tbody tr:hover td {
+            background-color: rgba(96, 165, 250, 0.06);
+            color: var(--siem-text);
+        }
         .msg-cell { max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-        .filter-form .form-select { background-color: var(--siem-card); border-color: var(--siem-border); color: #c9d1d9; }
-        .footer { color: #484f58; font-size: 0.8rem; padding: 1.5rem 0; }
+        /* Form controls */
+        .form-select, .form-control {
+            background-color: var(--siem-card2);
+            border-color: var(--siem-border);
+            color: var(--siem-text);
+        }
+        .form-select:focus, .form-control:focus {
+            background-color: var(--siem-card2);
+            border-color: var(--siem-accent);
+            color: var(--siem-text);
+            box-shadow: 0 0 0 0.2rem rgba(96, 165, 250, 0.2);
+        }
+        .form-select option { background-color: var(--siem-card2); color: var(--siem-text); }
+
+        /* Alerts (flash messages) */
+        .alert-danger  { background-color: rgba(248,113,113,0.15); border-color: var(--sev-critical); color: #fca5a5; }
+        .alert-warning { background-color: rgba(251,191,36,0.15);  border-color: var(--sev-high);     color: #fde68a; }
+        .alert-success { background-color: rgba(74,222,128,0.15);  border-color: var(--sev-low);      color: #86efac; }
+        .alert-info    { background-color: rgba(96,165,250,0.15);  border-color: var(--siem-accent);  color: #bfdbfe; }
+
+        /* Tabs */
+        .nav-tabs { border-color: var(--siem-border); }
+        .nav-tabs .nav-link { color: var(--siem-muted); border-color: transparent; }
+        .nav-tabs .nav-link:hover { color: var(--siem-text); border-color: var(--siem-border); }
+        .nav-tabs .nav-link.active {
+            color: var(--siem-text);
+            background-color: var(--siem-card2);
+            border-color: var(--siem-border) var(--siem-border) var(--siem-card2);
+        }
+
+        /* Misc */
+        .text-muted { color: var(--siem-muted) !important; }
+        code { color: var(--siem-accent); background: var(--siem-card2); padding: 1px 5px; border-radius: 3px; }
+        .footer { color: var(--siem-muted); font-size: 0.8rem; padding: 1.5rem 0; border-top: 1px solid var(--siem-border); margin-top: 2rem; }
+        .page-link { background-color: var(--siem-card2); border-color: var(--siem-border); color: var(--siem-accent); }
+        .page-link:hover { background-color: var(--siem-border); color: var(--siem-text); }
+        .page-item.disabled .page-link { background-color: var(--siem-card); color: var(--siem-muted); border-color: var(--siem-border); }
     </style>
     {% block extra_head %}{% endblock %}
 </head>
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark mb-4">
         <div class="container-fluid">
-            <a class="navbar-brand text-info" href="/">&#9655; Mini SIEM</a>
+            <a class="navbar-brand" href="/">&#9655; Mini SIEM</a>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navContent">
                 <span class="navbar-toggler-icon"></span>
             </button>
@@ -58,13 +138,42 @@
                     <li class="nav-item"><a class="nav-link" href="/events">Events</a></li>
                     <li class="nav-item"><a class="nav-link" href="/alerts">Alerts</a></li>
                     <li class="nav-item"><a class="nav-link" href="/rules">Rules</a></li>
+                    {% if current_user.is_authenticated and current_user.is_admin %}
+                    <li class="nav-item"><a class="nav-link" href="/ingest">Ingest</a></li>
+                    {% endif %}
                 </ul>
-                <span class="navbar-text text-secondary small">Security Information &amp; Event Management</span>
+                <ul class="navbar-nav ms-auto">
+                    {% if current_user.is_authenticated %}
+                    <li class="nav-item">
+                        <span class="nav-link text-muted small">
+                            <span style="color:var(--siem-accent)">&#9679;</span>
+                            {{ current_user.username }}
+                            <span class="badge bg-secondary ms-1" style="font-size:0.65rem">{{ current_user.role }}</span>
+                        </span>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/logout" style="color:#f87171">Logout</a>
+                    </li>
+                    {% endif %}
+                </ul>
             </div>
         </div>
     </nav>
 
     <main class="container-fluid px-4">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+        <div class="mb-3">
+            {% for category, message in messages %}
+            <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+                {{ message }}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% endwith %}
+
         {% block content %}{% endblock %}
     </main>
 

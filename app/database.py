@@ -13,11 +13,12 @@ alerts              – fired alert instances linked to triggering events
 All timestamps are stored as ISO-8601 UTC strings.
 """
 
+import json
 import sqlite3
 import os
 import threading
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 DB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
@@ -25,7 +26,7 @@ DB_PATH = os.path.join(DB_DIR, "siem.db")
 
 _local = threading.local()
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # ──────────────────────────────────────────────
 # Schema DDL
@@ -87,6 +88,15 @@ CREATE INDEX IF NOT EXISTS idx_norm_events_source  ON normalized_events(source);
 CREATE INDEX IF NOT EXISTS idx_norm_events_sev     ON normalized_events(severity);
 CREATE INDEX IF NOT EXISTS idx_alerts_fired        ON alerts(fired_at);
 CREATE INDEX IF NOT EXISTS idx_alerts_ack          ON alerts(acknowledged);
+
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT    NOT NULL UNIQUE,
+    password_hash TEXT    NOT NULL,
+    role          TEXT    NOT NULL DEFAULT 'analyst'
+                          CHECK(role IN ('admin', 'analyst')),
+    created_at    TEXT    NOT NULL
+);
 """
 
 # ──────────────────────────────────────────────
@@ -139,10 +149,19 @@ def close_connection():
 # Bootstrap
 # ──────────────────────────────────────────────
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Apply incremental schema migrations to existing databases."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(alerts)").fetchall()}
+    if "notes" not in cols:
+        conn.execute("ALTER TABLE alerts ADD COLUMN notes TEXT DEFAULT ''")
+        conn.commit()
+
+
 def init_db(db_path: Optional[str] = None):
     """Create tables and indexes if they do not exist."""
     conn = get_connection(db_path)
     conn.executescript(_SCHEMA_SQL)
+    _migrate(conn)
     # Track schema version
     existing = conn.execute("SELECT version FROM schema_version").fetchone()
     if existing is None:
@@ -388,3 +407,113 @@ def dashboard_stats(db_path: Optional[str] = None) -> Dict[str, Any]:
         "recent_alerts": recent_alerts,
         "recent_events": recent_events,
     }
+
+
+def events_per_hour_last_24h(db_path: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Return event counts bucketed by hour for the last 24 hours."""
+    conn = get_connection(db_path)
+    since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    rows = conn.execute(
+        "SELECT strftime('%Y-%m-%dT%H:00', timestamp) as hour, COUNT(*) as cnt "
+        "FROM normalized_events WHERE timestamp >= ? "
+        "GROUP BY hour ORDER BY hour ASC",
+        (since,),
+    ).fetchall()
+    return [{"hour": r[0], "count": r[1]} for r in rows]
+
+
+def top_ips(limit: int = 5, db_path: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Return the top source IPs extracted from metadata_json."""
+    conn = get_connection(db_path)
+    rows = conn.execute(
+        "SELECT metadata_json FROM normalized_events WHERE metadata_json IS NOT NULL AND metadata_json != '{}'"
+    ).fetchall()
+    ip_counts: Dict[str, int] = {}
+    for row in rows:
+        try:
+            meta = json.loads(row[0])
+            ip = meta.get("ip") or meta.get("source_ip") or meta.get("IpAddress")
+            if ip:
+                ip_counts[ip] = ip_counts.get(ip, 0) + 1
+        except (json.JSONDecodeError, TypeError):
+            pass
+    sorted_ips = sorted(ip_counts.items(), key=lambda x: x[1], reverse=True)[:limit]
+    return [{"ip": ip, "count": cnt} for ip, cnt in sorted_ips]
+
+
+def query_events_with_time_range(
+    filters: Optional[Dict[str, Any]] = None,
+    time_range: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    db_path: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Query events with optional time range (last_hour, last_24h, last_7d)."""
+    conn = get_connection(db_path)
+    clauses: List[str] = []
+    params: List[Any] = []
+    allowed = {"source", "event_type", "severity", "host", "user", "process"}
+    for key, val in (filters or {}).items():
+        if key in allowed and val:
+            clauses.append(f"{key} = ?")
+            params.append(val)
+    if time_range == "last_hour":
+        since = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        clauses.append("timestamp >= ?")
+        params.append(since)
+    elif time_range == "last_24h":
+        since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        clauses.append("timestamp >= ?")
+        params.append(since)
+    elif time_range == "last_7d":
+        since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        clauses.append("timestamp >= ?")
+        params.append(since)
+    where = "WHERE " + " AND ".join(clauses) if clauses else ""
+    sql = f"SELECT * FROM normalized_events {where} ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+    rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def add_alert_note(alert_id: int, note: str, db_path: Optional[str] = None):
+    with transaction(db_path) as conn:
+        conn.execute("UPDATE alerts SET notes = ? WHERE id = ?", (note, alert_id))
+
+
+# ──────────────────────────────────────────────
+# User operations
+# ──────────────────────────────────────────────
+
+def create_user(
+    username: str,
+    password_hash: str,
+    role: str = "analyst",
+    db_path: Optional[str] = None,
+) -> int:
+    with transaction(db_path) as conn:
+        cur = conn.execute(
+            "INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
+            (username, password_hash, role, _utcnow()),
+        )
+        return cur.lastrowid
+
+
+def get_user_by_username(
+    username: str, db_path: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    conn = get_connection(db_path)
+    row = conn.execute(
+        "SELECT * FROM users WHERE username = ?", (username,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def get_user_by_id(
+    user_id: int, db_path: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    conn = get_connection(db_path)
+    row = conn.execute(
+        "SELECT * FROM users WHERE id = ?", (user_id,)
+    ).fetchone()
+    return dict(row) if row else None

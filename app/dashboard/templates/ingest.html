@@ -1,0 +1,206 @@
+{% extends "base.html" %}
+{% block title %}Log Ingestion — Mini SIEM{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center mb-4">
+    <div>
+        <h2 class="mb-0" style="color:var(--siem-text)">Log Ingestion</h2>
+        <p class="text-muted small mb-0">Load sample data or paste raw logs to populate the SIEM</p>
+    </div>
+</div>
+
+<div class="row g-4">
+    <!-- Sample Data Card -->
+    <div class="col-lg-5">
+        <div class="card h-100">
+            <div class="card-header">&#9654; Load Sample Data</div>
+            <div class="card-body">
+                <p class="text-muted small">Instantly populate the SIEM with realistic simulated events from each log source. Great for demos and testing.</p>
+
+                <div class="d-grid gap-2 mb-3">
+                    <button class="btn btn-outline-primary sample-btn" data-source="all">
+                        Load All Sources (Windows + Linux + Azure)
+                    </button>
+                    <button class="btn btn-outline-light sample-btn" data-source="windows">
+                        Windows Events Only
+                    </button>
+                    <button class="btn btn-outline-light sample-btn" data-source="linux">
+                        Linux Syslog Only
+                    </button>
+                    <button class="btn btn-outline-light sample-btn" data-source="azure">
+                        Azure AD Logs Only
+                    </button>
+                </div>
+
+                <div id="sampleResult" class="d-none">
+                    <div class="alert mb-0" id="sampleAlert"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Manual Ingest Card -->
+    <div class="col-lg-7">
+        <div class="card h-100">
+            <div class="card-header">&#9998; Paste Raw Logs</div>
+            <div class="card-body">
+                <p class="text-muted small">Paste raw log data below. Select the source format that matches your input.</p>
+
+                <div class="mb-3">
+                    <label class="form-label">Source Format</label>
+                    <select id="ingestSource" class="form-select">
+                        <option value="linux">Linux Syslog (one line per event)</option>
+                        <option value="windows">Windows Event XML</option>
+                        <option value="azure">Azure JSON (array of log objects)</option>
+                    </select>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Log Data</label>
+                    <textarea id="ingestData" class="form-control" rows="12"
+                              placeholder="Paste your log data here..."
+                              style="font-family: monospace; font-size: 0.82rem;"></textarea>
+                </div>
+
+                <button id="ingestBtn" class="btn btn-outline-success">
+                    Ingest Logs
+                </button>
+
+                <div id="ingestResult" class="d-none mt-3">
+                    <div class="alert mb-0" id="ingestAlert"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Example Formats -->
+<div class="row g-4 mt-1">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">&#128196; Example Log Formats</div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-md-4">
+                        <p class="text-muted small mb-1 text-uppercase" style="letter-spacing:0.5px">Linux Syslog</p>
+                        <pre style="background:var(--siem-card2);padding:10px;border-radius:6px;font-size:0.75rem;color:var(--siem-text);overflow-x:auto">Jun 15 08:23:11 server sshd[1234]: Failed password for root from 192.168.1.100 port 22
+Jun 15 08:23:12 server sshd[1234]: Failed password for admin from 192.168.1.100 port 22
+Jun 15 08:23:15 server sudo: user1 : TTY=pts/0 ; USER=root ; COMMAND=/bin/bash</pre>
+                    </div>
+                    <div class="col-md-4">
+                        <p class="text-muted small mb-1 text-uppercase" style="letter-spacing:0.5px">Windows XML (one event)</p>
+                        <pre style="background:var(--siem-card2);padding:10px;border-radius:6px;font-size:0.75rem;color:var(--siem-text);overflow-x:auto">&lt;Event&gt;
+  &lt;System&gt;
+    &lt;EventID&gt;4625&lt;/EventID&gt;
+    &lt;TimeCreated SystemTime="2024-01-15T08:00:00Z"/&gt;
+    &lt;Computer&gt;WORKSTATION01&lt;/Computer&gt;
+  &lt;/System&gt;
+  &lt;EventData&gt;
+    &lt;Data Name="TargetUserName"&gt;admin&lt;/Data&gt;
+    &lt;Data Name="IpAddress"&gt;10.0.0.5&lt;/Data&gt;
+  &lt;/EventData&gt;
+&lt;/Event&gt;</pre>
+                    </div>
+                    <div class="col-md-4">
+                        <p class="text-muted small mb-1 text-uppercase" style="letter-spacing:0.5px">Azure JSON</p>
+                        <pre style="background:var(--siem-card2);padding:10px;border-radius:6px;font-size:0.75rem;color:var(--siem-text);overflow-x:auto">[{
+  "category": "SignInLogs",
+  "userPrincipalName": "user@domain.com",
+  "ipAddress": "1.2.3.4",
+  "status": {"errorCode": 50126},
+  "createdDateTime": "2024-01-15T08:00:00Z"
+}]</pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Sample data buttons
+document.querySelectorAll('.sample-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+        const source = btn.dataset.source;
+        const resultDiv = document.getElementById('sampleResult');
+        const alertDiv  = document.getElementById('sampleAlert');
+        btn.disabled = true;
+        btn.textContent = 'Loading...';
+
+        try {
+            const res = await fetch('/api/ingest/sample', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({source})
+            });
+            const data = await res.json();
+            resultDiv.classList.remove('d-none');
+            if (res.ok) {
+                alertDiv.className = 'alert alert-success mb-0';
+                alertDiv.textContent = `✓ Created ${data.events_created} events, fired ${data.alerts_fired} alerts.`;
+            } else {
+                alertDiv.className = 'alert alert-danger mb-0';
+                alertDiv.textContent = `Error: ${data.error}`;
+            }
+        } catch (e) {
+            resultDiv.classList.remove('d-none');
+            alertDiv.className = 'alert alert-danger mb-0';
+            alertDiv.textContent = 'Network error. Please try again.';
+        } finally {
+            btn.disabled = false;
+            btn.textContent = btn.dataset.origText || btn.textContent.replace('Loading...', source === 'all' ? 'Load All Sources (Windows + Linux + Azure)' : `${source.charAt(0).toUpperCase()+source.slice(1)} Events Only`);
+        }
+    });
+});
+
+// Manual ingest
+document.getElementById('ingestBtn').addEventListener('click', async () => {
+    const source  = document.getElementById('ingestSource').value;
+    const rawData = document.getElementById('ingestData').value.trim();
+    const resultDiv = document.getElementById('ingestResult');
+    const alertDiv  = document.getElementById('ingestAlert');
+    const btn = document.getElementById('ingestBtn');
+
+    if (!rawData) {
+        resultDiv.classList.remove('d-none');
+        alertDiv.className = 'alert alert-warning mb-0';
+        alertDiv.textContent = 'Please paste some log data first.';
+        return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Ingesting...';
+
+    let data = rawData;
+    if (source === 'azure') {
+        try { data = JSON.parse(rawData); } catch(e) {}
+    }
+
+    try {
+        const res = await fetch('/api/ingest', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source, data})
+        });
+        const result = await res.json();
+        resultDiv.classList.remove('d-none');
+        if (res.ok) {
+            alertDiv.className = 'alert alert-success mb-0';
+            alertDiv.textContent = `✓ Created ${result.events_created} events, fired ${result.alerts_fired} alerts.`;
+        } else {
+            alertDiv.className = 'alert alert-danger mb-0';
+            alertDiv.textContent = `Error: ${result.error}`;
+        }
+    } catch(e) {
+        resultDiv.classList.remove('d-none');
+        alertDiv.className = 'alert alert-danger mb-0';
+        alertDiv.textContent = 'Network error. Please try again.';
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Ingest Logs';
+    }
+});
+</script>
+{% endblock %}

@@ -4,19 +4,19 @@
 {% block content %}
 <div class="row mb-4">
     <div class="col">
-        <h4 class="text-light">Alert Viewer</h4>
-        <p class="text-secondary mb-0">Security alerts fired by detection rules</p>
+        <h4 class="mb-0">Alert Viewer</h4>
+        <p class="text-muted small mb-0">Security alerts fired by detection rules</p>
     </div>
 </div>
 
 <!-- Filter tabs -->
 <div class="mb-3">
-    <ul class="nav nav-pills nav-fill" style="max-width:400px">
+    <ul class="nav nav-tabs">
         <li class="nav-item">
-            <a class="nav-link {{ 'active' if show == 'unacknowledged' }}" href="/alerts?show=unacknowledged">Open</a>
+            <a class="nav-link {{ 'active' if show == 'open' }}" href="/alerts?show=open">Open</a>
         </li>
         <li class="nav-item">
-            <a class="nav-link {{ 'active' if show == 'acknowledged' }}" href="/alerts?show=acknowledged">Acknowledged</a>
+            <a class="nav-link {{ 'active' if show == 'ack' }}" href="/alerts?show=ack">Acknowledged</a>
         </li>
         <li class="nav-item">
             <a class="nav-link {{ 'active' if show == 'all' }}" href="/alerts?show=all">All</a>
@@ -35,9 +35,10 @@
                     <th>Severity</th>
                     <th>Rule</th>
                     <th>Message</th>
+                    <th>Note</th>
                     <th>Fired At</th>
                     <th>Status</th>
-                    <th>Action</th>
+                    <th>Actions</th>
                 </tr>
             </thead>
             <tbody>
@@ -47,7 +48,11 @@
                     <td><span class="badge badge-{{ alert.severity }}">{{ alert.severity | upper }}</span></td>
                     <td>{{ alert.rule_id }}</td>
                     <td class="msg-cell" title="{{ alert.message }}">{{ alert.message }}</td>
-                    <td class="text-secondary text-nowrap">{{ alert.fired_at }}</td>
+                    <td class="msg-cell" style="max-width:200px;color:var(--siem-muted);font-size:0.82rem"
+                        title="{{ alert.notes or '' }}">
+                        {{ alert.notes or '—' }}
+                    </td>
+                    <td class="text-muted text-nowrap" style="font-size:0.8rem">{{ alert.fired_at }}</td>
                     <td>
                         {% if alert.acknowledged %}
                         <span class="badge bg-secondary">ACK</span>
@@ -55,14 +60,19 @@
                         <span class="badge bg-danger">OPEN</span>
                         {% endif %}
                     </td>
-                    <td>
+                    <td class="text-nowrap">
                         {% if not alert.acknowledged %}
-                        <button class="btn btn-sm btn-outline-success ack-btn" data-id="{{ alert.id }}">
+                        <button class="btn btn-sm btn-outline-success ack-btn me-1" data-id="{{ alert.id }}">
                             Acknowledge
                         </button>
-                        {% else %}
-                        <span class="text-secondary">—</span>
                         {% endif %}
+                        <button class="btn btn-sm btn-outline-secondary note-btn"
+                                data-id="{{ alert.id }}"
+                                data-note="{{ alert.notes or '' }}"
+                                data-bs-toggle="modal"
+                                data-bs-target="#noteModal">
+                            Note
+                        </button>
                     </td>
                 </tr>
                 {% endfor %}
@@ -77,8 +87,10 @@
                 <a class="page-link" href="/alerts?page={{ page - 1 }}&show={{ show }}">Previous</a>
             </li>
             {% endif %}
-            <li class="page-item active"><span class="page-link">Page {{ page }}</span></li>
-            {% if alerts | length == 50 %}
+            <li class="page-item active">
+                <span class="page-link" style="background:var(--siem-card2);border-color:var(--siem-border)">Page {{ page }}</span>
+            </li>
+            {% if alerts | length == per_page %}
             <li class="page-item">
                 <a class="page-link" href="/alerts?page={{ page + 1 }}&show={{ show }}">Next</a>
             </li>
@@ -86,13 +98,36 @@
         </ul>
     </nav>
     {% else %}
-    <p class="text-secondary mb-0">No alerts to display.</p>
+    <p class="text-muted mb-0">No alerts to display.</p>
     {% endif %}
+</div>
+
+<!-- Note Modal -->
+<div class="modal fade" id="noteModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content" style="background:var(--siem-card);border-color:var(--siem-border)">
+            <div class="modal-header" style="border-color:var(--siem-border)">
+                <h5 class="modal-title">Add / Edit Note</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="noteAlertId">
+                <label class="form-label" style="color:var(--siem-muted)">Analyst Note</label>
+                <textarea id="noteText" class="form-control" rows="4"
+                          placeholder="Add investigation notes, context, or next steps..."></textarea>
+            </div>
+            <div class="modal-footer" style="border-color:var(--siem-border)">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-outline-primary" id="saveNoteBtn">Save Note</button>
+            </div>
+        </div>
+    </div>
 </div>
 {% endblock %}
 
 {% block extra_js %}
 <script>
+// Acknowledge buttons
 document.querySelectorAll('.ack-btn').forEach(btn => {
     btn.addEventListener('click', function() {
         const id = this.dataset.id;
@@ -103,6 +138,30 @@ document.querySelectorAll('.ack-btn').forEach(btn => {
             .then(() => location.reload())
             .catch(() => { this.textContent = 'Error'; this.disabled = false; });
     });
+});
+
+// Note modal — populate on open
+document.querySelectorAll('.note-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+        document.getElementById('noteAlertId').value = this.dataset.id;
+        document.getElementById('noteText').value = this.dataset.note || '';
+    });
+});
+
+// Save note
+document.getElementById('saveNoteBtn').addEventListener('click', function() {
+    const id   = document.getElementById('noteAlertId').value;
+    const note = document.getElementById('noteText').value.trim();
+    this.disabled = true;
+    this.textContent = 'Saving...';
+    fetch('/api/alerts/' + id + '/note', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({note})
+    })
+    .then(r => r.json())
+    .then(() => location.reload())
+    .catch(() => { this.textContent = 'Error'; this.disabled = false; });
 });
 </script>
 {% endblock %}

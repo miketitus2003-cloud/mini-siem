@@ -4,34 +4,52 @@
 {% block content %}
 <div class="row mb-4">
     <div class="col">
-        <h4 class="text-light">Event Explorer</h4>
-        <p class="text-secondary mb-0">Browse and filter normalized security events</p>
+        <h4 class="mb-0">Event Explorer</h4>
+        <p class="text-muted small mb-0">Browse and filter normalized security events</p>
     </div>
 </div>
 
 <!-- Filters -->
-<div class="row mb-3">
-    <div class="col-12">
-        <form method="GET" action="/events" class="filter-form d-flex gap-2 flex-wrap">
-            <select name="source" class="form-select form-select-sm" style="max-width:160px">
+<div class="card p-3 mb-3">
+    <form method="GET" action="/events" class="d-flex gap-2 flex-wrap align-items-end">
+        <div>
+            <label class="form-label mb-1" style="font-size:0.75rem;color:var(--siem-muted);text-transform:uppercase">Source</label>
+            <select name="source" class="form-select form-select-sm" style="min-width:130px">
                 <option value="">All Sources</option>
-                <option value="windows" {{ 'selected' if filters.get('source') == 'windows' }}>Windows</option>
-                <option value="linux" {{ 'selected' if filters.get('source') == 'linux' }}>Linux</option>
-                <option value="azure" {{ 'selected' if filters.get('source') == 'azure' }}>Azure</option>
+                <option value="windows" {{ 'selected' if source == 'windows' }}>Windows</option>
+                <option value="linux"   {{ 'selected' if source == 'linux' }}>Linux</option>
+                <option value="azure"   {{ 'selected' if source == 'azure' }}>Azure</option>
             </select>
-            <select name="severity" class="form-select form-select-sm" style="max-width:160px">
+        </div>
+        <div>
+            <label class="form-label mb-1" style="font-size:0.75rem;color:var(--siem-muted);text-transform:uppercase">Severity</label>
+            <select name="severity" class="form-select form-select-sm" style="min-width:130px">
                 <option value="">All Severities</option>
-                <option value="critical" {{ 'selected' if filters.get('severity') == 'critical' }}>Critical</option>
-                <option value="high" {{ 'selected' if filters.get('severity') == 'high' }}>High</option>
-                <option value="medium" {{ 'selected' if filters.get('severity') == 'medium' }}>Medium</option>
-                <option value="low" {{ 'selected' if filters.get('severity') == 'low' }}>Low</option>
+                <option value="critical" {{ 'selected' if severity == 'critical' }}>Critical</option>
+                <option value="high"     {{ 'selected' if severity == 'high' }}>High</option>
+                <option value="medium"   {{ 'selected' if severity == 'medium' }}>Medium</option>
+                <option value="low"      {{ 'selected' if severity == 'low' }}>Low</option>
             </select>
-            <input type="text" name="event_type" class="form-control form-control-sm" style="max-width:200px"
-                   placeholder="Event type..." value="{{ filters.get('event_type', '') }}">
+        </div>
+        <div>
+            <label class="form-label mb-1" style="font-size:0.75rem;color:var(--siem-muted);text-transform:uppercase">Time Range</label>
+            <select name="time_range" class="form-select form-select-sm" style="min-width:140px">
+                <option value="">All Time</option>
+                <option value="last_hour" {{ 'selected' if time_range == 'last_hour' }}>Last Hour</option>
+                <option value="last_24h"  {{ 'selected' if time_range == 'last_24h' }}>Last 24 Hours</option>
+                <option value="last_7d"   {{ 'selected' if time_range == 'last_7d' }}>Last 7 Days</option>
+            </select>
+        </div>
+        <div>
+            <label class="form-label mb-1" style="font-size:0.75rem;color:var(--siem-muted);text-transform:uppercase">Event Type</label>
+            <input type="text" name="event_type" class="form-control form-control-sm" style="min-width:160px"
+                   placeholder="e.g. auth_failure" value="{{ event_type }}">
+        </div>
+        <div class="d-flex gap-2 align-self-end">
             <button type="submit" class="btn btn-sm btn-outline-info">Filter</button>
             <a href="/events" class="btn btn-sm btn-outline-secondary">Clear</a>
-        </form>
-    </div>
+        </div>
+    </form>
 </div>
 
 <!-- Events table -->
@@ -48,7 +66,7 @@
                     <th>Severity</th>
                     <th>Host</th>
                     <th>User</th>
-                    <th>Process</th>
+                    <th>IP</th>
                     <th>Message</th>
                 </tr>
             </thead>
@@ -56,13 +74,13 @@
                 {% for ev in events %}
                 <tr>
                     <td>{{ ev.id }}</td>
-                    <td class="text-secondary text-nowrap">{{ ev.timestamp }}</td>
+                    <td class="text-muted text-nowrap" style="font-size:0.8rem">{{ ev.timestamp }}</td>
                     <td><span class="badge bg-secondary">{{ ev.source }}</span></td>
                     <td>{{ ev.event_type }}</td>
                     <td><span class="badge badge-{{ ev.severity }}">{{ ev.severity }}</span></td>
-                    <td>{{ ev.host }}</td>
-                    <td>{{ ev.user }}</td>
-                    <td>{{ ev.process }}</td>
+                    <td>{{ ev.host or '—' }}</td>
+                    <td>{{ ev.user or '—' }}</td>
+                    <td>{% if ev.ip %}<code>{{ ev.ip }}</code>{% else %}—{% endif %}</td>
                     <td class="msg-cell" title="{{ ev.message }}">{{ ev.message }}</td>
                 </tr>
                 {% endfor %}
@@ -75,19 +93,19 @@
         <ul class="pagination pagination-sm justify-content-center">
             {% if page > 1 %}
             <li class="page-item">
-                <a class="page-link" href="/events?page={{ page - 1 }}&source={{ filters.get('source','') }}&severity={{ filters.get('severity','') }}&event_type={{ filters.get('event_type','') }}">Previous</a>
+                <a class="page-link" href="/events?page={{ page - 1 }}&source={{ source }}&severity={{ severity }}&event_type={{ event_type }}&time_range={{ time_range }}">Previous</a>
             </li>
             {% endif %}
-            <li class="page-item active"><span class="page-link">Page {{ page }}</span></li>
-            {% if events | length == 50 %}
+            <li class="page-item active"><span class="page-link" style="background:var(--siem-card2);border-color:var(--siem-border)">Page {{ page }}</span></li>
+            {% if events | length == per_page %}
             <li class="page-item">
-                <a class="page-link" href="/events?page={{ page + 1 }}&source={{ filters.get('source','') }}&severity={{ filters.get('severity','') }}&event_type={{ filters.get('event_type','') }}">Next</a>
+                <a class="page-link" href="/events?page={{ page + 1 }}&source={{ source }}&severity={{ severity }}&event_type={{ event_type }}&time_range={{ time_range }}">Next</a>
             </li>
             {% endif %}
         </ul>
     </nav>
     {% else %}
-    <p class="text-secondary mb-0">No events match your filters.</p>
+    <p class="text-muted mb-0">No events match your filters. <a href="/ingest" style="color:var(--siem-accent)">Load sample data</a> to get started.</p>
     {% endif %}
 </div>
 {% endblock %}
